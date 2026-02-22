@@ -1,0 +1,44 @@
+# =============================================================================
+# Dev Environment — Example Variables
+#
+# Copy this file to dev.tfvars and fill in your values:
+#   cp dev.tfvars.example dev.tfvars
+#
+# Then initialize and apply:
+#   terraform init -backend-config="bucket=YOUR-TFSTATE-BUCKET"
+#   terraform plan -var-file=dev.tfvars
+#   terraform apply -var-file=dev.tfvars
+# =============================================================================
+
+project_id    = "my-gcp-project-dev"
+region        = "europe-central2"
+environment   = "dev"
+naming_prefix = "procwatch"
+
+# Storage
+bucket_location              = "EU"
+bronze_raw_lifecycle_age_days = 30
+
+# Container images
+image_tag = "latest"
+
+# Scheduler
+backfill_schedule_cron       = "0 */4 * * *"   # Every 4 hours
+transformation_schedule_cron = "30 7 * * *"     # Daily at 07:30
+scheduler_time_zone          = "Europe/Warsaw"
+
+# Backfill
+max_backfill_concurrency = 2
+backfill_start_date      = "2024-01-01"
+
+# Spark (optional overrides)
+# spark_properties = {
+#   "spark.executor.memory"    = "4g"
+#   "spark.executor.cores"     = "2"
+#   "spark.dynamicAllocation.enabled" = "true"
+# }
+
+# BigQuery (disabled by default in dev)
+enable_bigquery_serving  = false
+# bigquery_dataset_id    = "procurement_serving_dev"
+# dashboard_viewer_members = ["analyst@example.com"]
