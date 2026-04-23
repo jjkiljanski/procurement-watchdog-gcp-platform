@@ -1,49 +1,26 @@
 # =============================================================================
 # Prod Environment — Example Variables
 #
-# Copy this file to prod.tfvars and fill in your values:
-#   cp prod.tfvars.example prod.tfvars
-#
-# Then initialize and apply:
-#   terraform init -backend-config="bucket=YOUR-TFSTATE-BUCKET"
-#   terraform plan -var-file=prod.tfvars
-#   terraform apply -var-file=prod.tfvars
+# cp prod.tfvars.example prod.tfvars
+# terraform init -backend-config="bucket=YOUR-TFSTATE-BUCKET"
+# terraform plan  -var-file=prod.tfvars
+# terraform apply -var-file=prod.tfvars
 # =============================================================================
 
 project_id    = "my-gcp-project-prod"
-region        = "europe-central2"
+region        = "europe-west1"
 environment   = "prod"
 naming_prefix = "procwatch"
 
-# Storage
-bucket_location              = "EU"
-bronze_raw_lifecycle_age_days = 90
-bronze_lifecycle_age_days    = 180
+bucket_location = "EU"
+bq_location     = "EU"
 
-# Container images — pin to a specific tag in prod
-image_tag = "v1.0.0"
+dataproc_subnet_cidr = "10.100.0.0/24"
 
-# Scheduler
-backfill_schedule_cron       = "0 * * * *"     # Every hour
-transformation_schedule_cron = "30 6 * * *"     # Daily at 06:30
-scheduler_time_zone          = "Europe/Warsaw"
+# Pin to a specific release tag in prod
+downloader_image_tag     = "v1.0.0"
+dataproc_container_image = "europe-west1-docker.pkg.dev/my-gcp-project-prod/spark/procurement-spark:v1.0.0"
 
-# Backfill
-max_backfill_concurrency = 5
-backfill_start_date      = "2024-01-01"
-
-# Spark
-spark_properties = {
-  "spark.executor.memory"               = "8g"
-  "spark.executor.cores"                = "4"
-  "spark.dynamicAllocation.enabled"     = "true"
-  "spark.dynamicAllocation.maxExecutors" = "20"
-}
-
-# BigQuery
-enable_bigquery_serving  = true
-bigquery_dataset_id      = "procurement_serving"
-dashboard_viewer_members = [
-  # "analyst@example.com",
-  # "dashboard-sa@my-project.iam.gserviceaccount.com",
-]
+# Daily pipeline schedule — 03:00 UTC
+schedule_cron = "0 3 * * *"
+time_zone     = "Europe/Warsaw"

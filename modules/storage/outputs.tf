@@ -1,14 +1,9 @@
-output "bucket_names" {
-  description = "Map of layer name to bucket name."
-  value       = { for k, v in google_storage_bucket.buckets : k => v.name }
+output "bucket_name" {
+  description = "Name of the lakehouse GCS bucket."
+  value       = google_storage_bucket.lakehouse.name
 }
 
-output "bucket_urls" {
-  description = "Map of layer name to gs:// URI."
-  value       = { for k, v in google_storage_bucket.buckets : k => "gs://${v.name}" }
-}
-
-output "bucket_self_links" {
-  description = "Map of layer name to bucket self_link."
-  value       = { for k, v in google_storage_bucket.buckets : k => v.self_link }
+output "bucket_url" {
+  description = "gs:// URI of the lakehouse bucket."
+  value       = "gs://${google_storage_bucket.lakehouse.name}"
 }

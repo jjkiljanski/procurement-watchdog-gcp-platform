@@ -2,146 +2,81 @@
 # Variables — Dev Environment
 ################################################################################
 
-# --------------------------------------------------------------------------- #
-# Required
-# --------------------------------------------------------------------------- #
-
 variable "project_id" {
   description = "GCP project ID."
   type        = string
 }
 
 variable "region" {
-  description = "GCP region for compute resources."
+  description = "GCP region for compute resources (Dataproc, Cloud Run, Workflows)."
   type        = string
 }
 
-# --------------------------------------------------------------------------- #
-# Naming & Environment
-# --------------------------------------------------------------------------- #
-
 variable "environment" {
-  description = "Environment name."
-  type        = string
-  default     = "dev"
+  type    = string
+  default = "dev"
 }
 
 variable "naming_prefix" {
-  description = "Prefix for all resource names (e.g. 'procwatch')."
+  description = "Prefix for all resource names."
   type        = string
   default     = "procwatch"
 }
 
-# --------------------------------------------------------------------------- #
-# Storage
-# --------------------------------------------------------------------------- #
-
 variable "bucket_location" {
-  description = "GCS bucket location."
+  description = "GCS bucket location. Should match bq_location."
   type        = string
   default     = "EU"
 }
 
-variable "bronze_raw_lifecycle_age_days" {
-  description = "Days before bronze_raw transitions to Nearline. 0 = disabled."
-  type        = number
-  default     = 30
+variable "network_name" {
+  description = "VPC network to create the Dataproc subnet in."
+  type        = string
+  default     = "default"
 }
 
-variable "bronze_lifecycle_age_days" {
-  description = "Days before bronze transitions to Nearline. 0 = disabled."
-  type        = number
-  default     = 0
+variable "dataproc_subnet_cidr" {
+  description = "CIDR for the Dataproc Serverless subnet."
+  type        = string
+  default     = "10.100.0.0/24"
 }
 
-variable "silver_lifecycle_age_days" {
-  description = "Days before silver transitions to Nearline. 0 = disabled."
-  type        = number
-  default     = 0
-}
-
-variable "gold_lifecycle_age_days" {
-  description = "Days before gold transitions to Nearline. 0 = disabled."
-  type        = number
-  default     = 0
-}
-
-# --------------------------------------------------------------------------- #
-# Container Images
-# --------------------------------------------------------------------------- #
-
-variable "image_tag" {
-  description = "Docker image tag for all pipeline containers."
+variable "downloader_image_tag" {
+  description = "Docker image tag for the downloader Cloud Run Job."
   type        = string
   default     = "latest"
 }
 
-# --------------------------------------------------------------------------- #
-# Scheduler
-# --------------------------------------------------------------------------- #
-
-variable "backfill_schedule_cron" {
-  description = "Cron for backfill dispatcher."
+variable "dataproc_container_image" {
+  description = "Full Artifact Registry URI for the Dataproc Spark container. Set after the first image build."
   type        = string
-  default     = "0 */4 * * *"  # Every 4 hours in dev
+  default     = ""
 }
 
-variable "transformation_schedule_cron" {
-  description = "Cron for daily Spark transformation."
+variable "bq_location" {
+  description = "BigQuery dataset location. Should match bucket_location."
   type        = string
-  default     = "30 7 * * *"
+  default     = "EU"
 }
 
-variable "scheduler_time_zone" {
-  description = "Time zone for Cloud Scheduler."
+variable "bq_silver_dataset_id" {
+  type    = string
+  default = "procurement_silver"
+}
+
+variable "bq_obs_dataset_id" {
+  type    = string
+  default = "procurement_obs"
+}
+
+variable "schedule_cron" {
+  description = "Cron schedule for the daily pipeline (UTC). Default: 03:00 UTC daily."
+  type        = string
+  default     = "0 3 * * *"
+}
+
+variable "time_zone" {
+  description = "IANA time zone shown in Cloud Scheduler UI (cron is always UTC)."
   type        = string
   default     = "Europe/Warsaw"
-}
-
-# --------------------------------------------------------------------------- #
-# Backfill
-# --------------------------------------------------------------------------- #
-
-variable "max_backfill_concurrency" {
-  description = "Maximum concurrent downloader jobs during backfill."
-  type        = number
-  default     = 2
-}
-
-variable "backfill_start_date" {
-  description = "Earliest date for the backfill window (YYYY-MM-DD)."
-  type        = string
-  default     = "2024-01-01"
-}
-
-# --------------------------------------------------------------------------- #
-# Spark
-# --------------------------------------------------------------------------- #
-
-variable "spark_properties" {
-  description = "Spark configuration properties for Dataproc Serverless."
-  type        = map(string)
-  default     = {}
-}
-
-# --------------------------------------------------------------------------- #
-# BigQuery
-# --------------------------------------------------------------------------- #
-
-variable "enable_bigquery_serving" {
-  description = "Whether to create BigQuery serving layer."
-  type        = bool
-  default     = false
-}
-
-variable "bigquery_dataset_id" {
-  description = "BigQuery dataset ID."
-  type        = string
-  default     = "procurement_serving_dev"
-}
-
-variable "dashboard_viewer_members" {
-  description = "Email addresses granted BigQuery READER access for Looker Studio."
-  type        = list(string)
-  default     = []
 }

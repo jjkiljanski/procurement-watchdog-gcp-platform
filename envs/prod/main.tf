@@ -1,8 +1,8 @@
 ################################################################################
 # Main Composition — Prod Environment
 #
-# Wires together all infrastructure modules for the production environment.
-# Identical structure to dev — differences are in variable defaults and tfvars.
+# Identical module structure to dev. Differences: force_destroy=false on
+# storage, larger downloader container, pinned image tags.
 ################################################################################
 
 terraform {
@@ -31,10 +31,13 @@ locals {
     "iam.googleapis.com",
     "dataproc.googleapis.com",
     "run.googleapis.com",
-    "cloudscheduler.googleapis.com",
     "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",
     "logging.googleapis.com",
+    "compute.googleapis.com",
+    "workflows.googleapis.com",
+    "workflowexecutions.googleapis.com",
+    "cloudscheduler.googleapis.com",
   ]
 }
 
@@ -47,194 +50,169 @@ resource "google_project_service" "apis" {
 }
 
 # --------------------------------------------------------------------------- #
-# Storage
+# Storage — single unified lakehouse bucket
 # --------------------------------------------------------------------------- #
 
 module "storage" {
   source = "../../modules/storage"
 
-  project_id                   = var.project_id
-  environment                  = var.environment
-  naming_prefix                = var.naming_prefix
-  bucket_location              = var.bucket_location
-  bronze_raw_lifecycle_age_days = var.bronze_raw_lifecycle_age_days
-  bronze_lifecycle_age_days    = var.bronze_lifecycle_age_days
-  silver_lifecycle_age_days    = var.silver_lifecycle_age_days
-  gold_lifecycle_age_days      = var.gold_lifecycle_age_days
+  project_id      = var.project_id
+  environment     = var.environment
+  bucket_location = var.bucket_location
+  force_destroy   = false
 
   depends_on = [google_project_service.apis]
 }
 
 # --------------------------------------------------------------------------- #
-# IAM
+# Network — subnet with Private Google Access for Dataproc Serverless
+# --------------------------------------------------------------------------- #
+
+module "network" {
+  source = "../../modules/network"
+
+  project_id    = var.project_id
+  region        = var.region
+  naming_prefix = var.naming_prefix
+  network_name  = var.network_name
+  subnet_cidr   = var.dataproc_subnet_cidr
+
+  depends_on = [google_project_service.apis]
+}
+
+# --------------------------------------------------------------------------- #
+# Artifact Registry — Docker repository for Spark + downloader images
+# --------------------------------------------------------------------------- #
+
+module "artifact_registry" {
+  source = "../../modules/artifact_registry"
+
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+
+  depends_on = [google_project_service.apis]
+}
+
+# --------------------------------------------------------------------------- #
+# IAM — service accounts and bindings
 # --------------------------------------------------------------------------- #
 
 module "iam" {
   source = "../../modules/iam"
 
-  project_id              = var.project_id
-  region                  = var.region
-  naming_prefix           = var.naming_prefix
-  bucket_names            = module.storage.bucket_names
-  dispatcher_service_name = module.dispatcher.service_name
-  launcher_service_name   = module.launcher.service_name
+  project_id       = var.project_id
+  naming_prefix    = var.naming_prefix
+  lakehouse_bucket = module.storage.bucket_name
 
-  depends_on = [google_project_service.apis]
+  depends_on = [module.storage]
 }
 
 # --------------------------------------------------------------------------- #
-# Cloud Run — Downloader Job
+# Cloud Run — bzp-downloader job (larger limits for prod)
 # --------------------------------------------------------------------------- #
 
 module "downloader" {
-  source = "../../modules/cloud_run_downloader_job"
+  source = "../../modules/cloud_run_downloader"
 
   project_id            = var.project_id
   region                = var.region
   environment           = var.environment
-  naming_prefix         = var.naming_prefix
   downloader_sa_email   = module.iam.downloader_sa_email
-  bronze_raw_bucket_url = module.storage.bucket_urls["bronze_raw"]
-  state_bucket_url      = module.storage.bucket_urls["state"]
-  image_tag             = var.image_tag
+  artifact_registry_url = module.artifact_registry.repository_url
+  lakehouse_bucket      = module.storage.bucket_name
+  image_tag             = var.downloader_image_tag
   cpu_limit             = "2"
   memory_limit          = "2Gi"
-  job_timeout           = "3600s"
 
-  depends_on = [google_project_service.apis]
+  depends_on = [module.iam, module.artifact_registry]
 }
 
 # --------------------------------------------------------------------------- #
-# Cloud Run — Dispatcher Service
+# BigQuery — procurement_silver and procurement_obs datasets
 # --------------------------------------------------------------------------- #
 
-module "dispatcher" {
-  source = "../../modules/cloud_run_dispatcher"
+module "bigquery" {
+  source = "../../modules/bigquery"
 
-  project_id               = var.project_id
-  region                   = var.region
-  environment              = var.environment
-  naming_prefix            = var.naming_prefix
-  dispatcher_sa_email      = module.iam.dispatcher_sa_email
-  state_bucket_url         = module.storage.bucket_urls["state"]
-  downloader_job_name      = module.downloader.job_name
-  artifact_registry_url    = module.downloader.artifact_registry_url
-  image_tag                = var.image_tag
-  max_backfill_concurrency = var.max_backfill_concurrency
-  backfill_start_date      = var.backfill_start_date
+  project_id        = var.project_id
+  environment       = var.environment
+  bq_location       = var.bq_location
+  silver_dataset_id = var.bq_silver_dataset_id
+  obs_dataset_id    = var.bq_obs_dataset_id
+  pipeline_sa_email = module.iam.pipeline_sa_email
 
-  depends_on = [google_project_service.apis]
+  depends_on = [module.iam]
 }
 
 # --------------------------------------------------------------------------- #
-# Cloud Run — Launcher Service
+# Workflows — daily pipeline + Cloud Scheduler trigger
 # --------------------------------------------------------------------------- #
 
-module "launcher" {
-  source = "../../modules/cloud_run_launcher"
+module "workflows" {
+  source = "../../modules/workflows"
 
   project_id                = var.project_id
   region                    = var.region
-  environment               = var.environment
   naming_prefix             = var.naming_prefix
-  launcher_sa_email         = module.iam.launcher_sa_email
-  pipeline_runtime_sa_email = module.iam.pipeline_runtime_sa_email
-  artifact_registry_url     = module.downloader.artifact_registry_url
-  artifacts_bucket_url      = module.storage.bucket_urls["artifacts"]
-  bronze_raw_bucket_url     = module.storage.bucket_urls["bronze_raw"]
-  bronze_bucket_url         = module.storage.bucket_urls["bronze"]
-  silver_bucket_url         = module.storage.bucket_urls["silver"]
-  gold_bucket_url           = module.storage.bucket_urls["gold"]
-  state_bucket_url          = module.storage.bucket_urls["state"]
-  image_tag                 = var.image_tag
-  spark_properties          = var.spark_properties
+  environment               = var.environment
+  orchestrator_sa_email     = module.iam.orchestrator_sa_email
+  lakehouse_bucket          = module.storage.bucket_name
+  pipeline_sa_email         = module.iam.pipeline_sa_email
+  dataproc_subnet_self_link = module.network.dataproc_subnet_self_link
+  dataproc_container_image  = var.dataproc_container_image
+  downloader_job_name       = module.downloader.job_name
+  bq_silver_dataset_id      = var.bq_silver_dataset_id
+  bq_obs_dataset_id         = var.bq_obs_dataset_id
+  schedule_cron             = var.schedule_cron
+  time_zone                 = var.time_zone
 
-  depends_on = [google_project_service.apis]
-}
-
-# --------------------------------------------------------------------------- #
-# Dataproc Serverless Permissions
-# --------------------------------------------------------------------------- #
-
-module "dataproc_permissions" {
-  source = "../../modules/dataproc_permissions"
-
-  project_id                = var.project_id
-  pipeline_runtime_sa_email = module.iam.pipeline_runtime_sa_email
-  enable_bigquery_access    = var.enable_bigquery_serving
-
-  depends_on = [google_project_service.apis]
-}
-
-# --------------------------------------------------------------------------- #
-# Cloud Scheduler
-# --------------------------------------------------------------------------- #
-
-module "scheduler" {
-  source = "../../modules/scheduler"
-
-  project_id                   = var.project_id
-  region                       = var.region
-  environment                  = var.environment
-  naming_prefix                = var.naming_prefix
-  backfill_schedule_cron       = var.backfill_schedule_cron
-  transformation_schedule_cron = var.transformation_schedule_cron
-  time_zone                    = var.scheduler_time_zone
-  dispatcher_service_url       = module.dispatcher.service_url
-  launcher_service_url         = module.launcher.service_url
-  scheduler_invoker_sa_email   = module.iam.scheduler_invoker_sa_email
-
-  depends_on = [google_project_service.apis]
-}
-
-# --------------------------------------------------------------------------- #
-# BigQuery Serving (Enabled by default in prod)
-# --------------------------------------------------------------------------- #
-
-module "bigquery_serving" {
-  source = "../../modules/bigquery_serving"
-  count  = var.enable_bigquery_serving ? 1 : 0
-
-  project_id               = var.project_id
-  environment              = var.environment
-  dataset_id               = var.bigquery_dataset_id
-  dataset_location         = var.bucket_location
-  gold_bucket_url          = module.storage.bucket_urls["gold"]
-  dashboard_viewer_members = var.dashboard_viewer_members
-
-  depends_on = [google_project_service.apis]
+  depends_on = [module.iam, module.network, module.storage, module.downloader]
 }
 
 # --------------------------------------------------------------------------- #
 # Outputs
 # --------------------------------------------------------------------------- #
 
-output "bucket_urls" {
-  description = "GCS bucket URIs by layer."
-  value       = module.storage.bucket_urls
+output "lakehouse_bucket" {
+  value = module.storage.bucket_url
+}
+
+output "artifact_registry_url" {
+  value = module.artifact_registry.repository_url
+}
+
+output "spark_image_base" {
+  value = module.artifact_registry.spark_image_base
+}
+
+output "downloader_image_base" {
+  value = module.artifact_registry.downloader_image_base
 }
 
 output "service_account_emails" {
-  description = "Service account emails."
   value = {
-    downloader       = module.iam.downloader_sa_email
-    dispatcher       = module.iam.dispatcher_sa_email
-    pipeline_runtime = module.iam.pipeline_runtime_sa_email
-    launcher         = module.iam.launcher_sa_email
-    scheduler        = module.iam.scheduler_invoker_sa_email
+    downloader   = module.iam.downloader_sa_email
+    pipeline     = module.iam.pipeline_sa_email
+    orchestrator = module.iam.orchestrator_sa_email
   }
 }
 
-output "cloud_run_urls" {
-  description = "Cloud Run service/job URLs."
+output "downloader_job_name" {
+  value = module.downloader.job_name
+}
+
+output "dataproc_subnet" {
+  value = module.network.dataproc_subnet_self_link
+}
+
+output "bq_datasets" {
   value = {
-    dispatcher = module.dispatcher.service_url
-    launcher   = module.launcher.service_url
-    downloader = module.downloader.job_name
+    silver = module.bigquery.silver_dataset_id
+    obs    = module.bigquery.obs_dataset_id
   }
 }
 
-output "bigquery_dataset_id" {
-  description = "BigQuery dataset ID (empty if disabled)."
-  value       = var.enable_bigquery_serving ? module.bigquery_serving[0].dataset_id : ""
+output "workflow_name" {
+  value = module.workflows.workflow_name
 }

@@ -1,159 +1,59 @@
 # Procurement Watchdog — GCP Platform
 
-Production-grade Terraform infrastructure for deploying the [Procurement Watchdog Lakehouse](../procurement-watchdog-lakehouse) to Google Cloud Platform.
+Terraform infrastructure for deploying the [Procurement Watchdog Lakehouse](../procurement-watchdog-lakehouse) to Google Cloud Platform.
 
-Ingests Polish public procurement data (BZP) via date-filtered API, transforms it through a medallion lakehouse (bronze/silver/gold), and serves analytical marts via BigQuery external tables for Looker Studio dashboards.
+Ingests Polish public procurement data (BZP) via the BZP API, transforms it through bronze → silver (Apache Iceberg) layers using Dataproc Serverless (PySpark), and exposes the silver layer as BigQuery external Iceberg tables.
 
 ---
 
 ## Architecture
 
 ```
-                           ┌─────────────────────┐
-                           │   Cloud Scheduler    │
-                           │  (backfill + daily)  │
-                           └────┬───────────┬─────┘
-                                │           │
-                     OIDC token │           │ OIDC token
-                                ▼           ▼
-                  ┌──────────────┐   ┌──────────────┐
-                  │  Dispatcher  │   │   Launcher   │
-                  │ (Cloud Run)  │   │ (Cloud Run)  │
-                  └──────┬───────┘   └──────┬───────┘
-                         │                  │
-              triggers   │                  │  submits
-              job exec   │                  │  batch
-                         ▼                  ▼
-              ┌──────────────────┐  ┌───────────────────┐
-              │   Downloader     │  │ Dataproc Serverless│
-              │  (Cloud Run Job) │  │   (Spark Batch)    │
-              └────────┬─────────┘  └────────┬──────────┘
-                       │                     │
-          Public API   │                     │ reads bronze_raw
-          (BZP)  ──────┘                     │ writes bronze/silver/gold
-                       │                     │
-                       ▼                     ▼
-              ┌──────────────────────────────────────────┐
-              │              Google Cloud Storage         │
-              │                                          │
-              │  bronze_raw/source=api/dt=YYYY-MM-DD/    │
-              │  bronze/dt=YYYY-MM-DD/                   │
-              │  silver/...                              │
-              │  gold/case_mart/date=YYYY-MM-DD/         │  ◄── Canonical
-              │  gold/buyer_mart/date=YYYY-MM-DD/        │
-              │  gold/market_mart/date=YYYY-MM-DD/       │
-              │  gold/signals_buyer_daily/date=YYYY-MM-DD│
-              │  state/backfill/dt=YYYY-MM-DD.done       │
-              └───────────────┬──────────────────────────┘
-                              │
-                              │ External Tables (Parquet)
-                              ▼
-              ┌──────────────────────────────────┐
-              │   BigQuery (Serving Layer Only)   │
-              │                                  │
-              │  case_mart          (external)    │
-              │  buyer_mart         (external)    │
-              │  market_mart        (external)    │
-              │  signals_buyer_daily (external)   │
-              │  v_institution_summary (view)     │
-              │  v_risk_metrics        (view)     │
-              └──────────────┬───────────────────┘
-                             │
-                             ▼
-              ┌──────────────────────────────────┐
-              │       Looker Studio Dashboards    │
-              │       (NOT managed by Terraform)  │
-              └──────────────────────────────────┘
+                    BZP API
+                       │
+                       ▼
+          ┌────────────────────────┐
+          │   Cloud Run Job        │  bzp-downloader
+          │   (fetch_bzp_...)      │  triggered by Airflow daily DAG
+          └───────────┬────────────┘
+                      │ writes JSON
+                      ▼
+          ┌────────────────────────┐
+          │   GCS bucket           │  {project_id}-lakehouse
+          │   /bronze_raw/         │  bzp_YYYY-MM-DD.json
+          └───────────┬────────────┘
+                      │
+                      ▼
+          ┌────────────────────────┐
+          │  Dataproc Serverless   │  procurement-spark image
+          │  build_bronze.py       │  → /bronze/notices/...
+          └───────────┬────────────┘
+                      │
+                      ▼
+          ┌────────────────────────┐
+          │  Dataproc Serverless   │
+          │  build_silver_day.py   │  → /iceberg/notice_type_tables/
+          │                        │    /iceberg/common/
+          └───────────┬────────────┘
+                      │
+                      ▼
+          ┌────────────────────────┐
+          │  Dataproc Serverless   │
+          │  build_silver_         │  → /iceberg/notice_update_deltas/
+          │  update_deltas.py      │
+          └───────────┬────────────┘
+                      │
+                      ▼
+          ┌────────────────────────┐
+          │  BigQuery              │  created by setup_bq_external_tables.py
+          │  external Iceberg      │  dataset: procurement_silver
+          │  tables over silver    │
+          └────────────────────────┘
+
+   Cloud Composer (Airflow) orchestrates all steps
+   dags/daily_dag.py   — 03:00 UTC daily
+   dags/backfill_dag.py — manual trigger
 ```
-
-### Key Design Decisions
-
-- **Gold in GCS is canonical storage.** BigQuery serves as a query/visualization layer via external tables — no data duplication, no ETL into BigQuery.
-- **API fetch is decoupled from Spark transforms.** Different failure domains, different retry semantics, different cost profiles.
-- **Spark batch jobs are NOT managed by Terraform.** The launcher service submits them dynamically. Terraform only provisions the infrastructure (service accounts, permissions, scheduler triggers).
-- **Looker Studio dashboards are NOT managed by Terraform.** They connect to BigQuery external tables which are managed.
-
----
-
-## Backfill Strategy
-
-The system handles both daily incremental ingestion and large historical backfills (60GB+ annual loads).
-
-### How Backfill Works
-
-```
-Cloud Scheduler (e.g. every hour)
-        │
-        ▼
-Dispatcher Service
-  1. Lists state/backfill/dt=*.done in GCS
-  2. Computes next unprocessed date from backfill_start_date
-  3. Checks running job count < max_backfill_concurrency
-  4. Triggers Downloader Job with TARGET_DATE=YYYY-MM-DD
-        │
-        ▼
-Downloader Job (per date)
-  1. Calls BZP API with date filter for all 14 notice types
-  2. Paginates with exponential backoff
-  3. Writes compressed JSONL to bronze_raw/source=api/dt=YYYY-MM-DD/
-  4. On success, writes marker: state/backfill/dt=YYYY-MM-DD.done
-```
-
-### Idempotency
-
-Every component is idempotent by design:
-
-| Component | Mechanism |
-|-----------|-----------|
-| **Downloader** | Writes to deterministic GCS path — rerun overwrites same partition. Completion marker in state bucket gates the dispatcher. |
-| **Spark Bronze** | Overwrites `bronze/noticeType=<TYPE>/publicationDateDay=YYYY-MM-DD/` partition. |
-| **Spark Silver** | Overwrites `silver/common_envelope/publicationDateDay=YYYY-MM-DD/` partition. |
-| **Spark Gold** | Overwrites `gold/<mart>/date=YYYY-MM-DD/` partition. |
-| **Dispatcher** | Scans state markers — already-done dates are skipped. Safe to invoke repeatedly. |
-
-### Rate Limiting
-
-- **Dispatcher-level**: `max_backfill_concurrency` variable limits simultaneous downloader jobs (default: 2 dev, 5 prod).
-- **Downloader-level**: Exponential backoff on API calls. Paginated at 500 records/page with configurable delays.
-- **Scheduler-level**: Cron frequency controls how often new dates are picked up (hourly/bi-hourly).
-
-### Restartability
-
-If a backfill is interrupted:
-1. Completed dates have `.done` markers in the state bucket — they are skipped.
-2. In-progress dates have no marker — the dispatcher will re-trigger them.
-3. Partial GCS writes are overwritten on retry (deterministic paths).
-
-No manual cleanup required.
-
----
-
-## BigQuery Serving Layer
-
-BigQuery is configured as a **read-only serving layer** using external tables:
-
-- **External tables** point directly at Gold Parquet files in GCS using Hive partitioning (`date=YYYY-MM-DD`).
-- **No data is copied** into BigQuery managed storage — queries read directly from GCS.
-- **Automatic schema detection** via Parquet metadata (autodetect = true).
-- **Optional views** provide pre-built aggregations (institution summary, risk metrics).
-
-### Cost Implications
-
-- No BigQuery storage costs (data lives in GCS).
-- Query costs are based on bytes scanned from GCS (partition pruning reduces cost significantly).
-- For high-frequency dashboards, consider materializing critical views as native tables (outside Terraform).
-
----
-
-## Connecting Looker Studio
-
-1. Open [Looker Studio](https://lookerstudio.google.com/).
-2. Create a new data source → **BigQuery**.
-3. Select project → dataset `procurement_serving` (or your configured dataset ID).
-4. Choose an external table (e.g., `case_mart`) or a view (e.g., `v_institution_summary`).
-5. Build your dashboard.
-
-Ensure the Looker Studio user's Google account is listed in `dashboard_viewer_members` in your tfvars, or has BigQuery Data Viewer access via another mechanism.
 
 ---
 
@@ -162,21 +62,20 @@ Ensure the Looker Studio user's Google account is listed in `dashboard_viewer_me
 ```
 procurement-watchdog-gcp-platform/
 ├── modules/
-│   ├── storage/                    # GCS buckets (medallion layers + state)
-│   ├── iam/                        # Service accounts + bucket-level IAM
-│   ├── cloud_run_downloader_job/   # API fetch Cloud Run Job
-│   ├── cloud_run_dispatcher/       # Backfill orchestrator service
-│   ├── cloud_run_launcher/         # Spark batch submission service
-│   ├── scheduler/                  # Cloud Scheduler triggers
-│   ├── dataproc_permissions/       # Dataproc Serverless IAM
-│   └── bigquery_serving/           # External tables + views
+│   ├── storage/                  # Single lakehouse GCS bucket
+│   ├── network/                  # Dataproc Serverless subnet (PGA)
+│   ├── iam/                      # Service accounts + IAM bindings
+│   ├── artifact_registry/        # Docker registry (spark repo)
+│   ├── cloud_run_downloader/     # bzp-downloader Cloud Run Job
+│   ├── bigquery/                 # procurement_silver + procurement_obs datasets
+│   └── composer/                 # Cloud Composer v2 (managed Airflow)
 ├── envs/
-│   ├── dev/                        # Dev environment config
+│   ├── dev/                      # Dev environment config
 │   │   ├── backend.tf
 │   │   ├── main.tf
 │   │   ├── variables.tf
 │   │   └── dev.tfvars.example
-│   └── prod/                       # Prod environment config
+│   └── prod/                     # Prod environment config
 │       ├── backend.tf
 │       ├── main.tf
 │       ├── variables.tf
@@ -187,12 +86,26 @@ procurement-watchdog-gcp-platform/
 
 ---
 
+## GCP Services Provisioned
+
+| Service | Purpose | Module |
+|---------|---------|--------|
+| **GCS bucket** | bronze_raw, bronze, silver (Iceberg), jobs, _processed | `storage` |
+| **Subnet** | Dataproc Serverless workers (Private Google Access) | `network` |
+| **Service Accounts** | downloader, pipeline, composer (least-privilege) | `iam` |
+| **Artifact Registry** | Docker images: procurement-spark, procurement-downloader | `artifact_registry` |
+| **Cloud Run Job** | `bzp-downloader` — fetches BZP API data | `cloud_run_downloader` |
+| **BigQuery datasets** | `procurement_silver`, `procurement_obs` | `bigquery` |
+| **Cloud Composer** | Managed Airflow — daily_dag and backfill_dag | `composer` |
+
+---
+
 ## Deployment Guide
 
 ### Prerequisites
 
 - Terraform >= 1.5
-- `gcloud` CLI authenticated with sufficient permissions
+- `gcloud` CLI authenticated with `roles/owner` or equivalent
 - A GCP project with billing enabled
 - A GCS bucket for Terraform state (created manually)
 
@@ -200,7 +113,7 @@ procurement-watchdog-gcp-platform/
 
 ```bash
 export PROJECT_ID="your-project-id"
-export TF_STATE_BUCKET="procwatch-tfstate-dev"
+export TF_STATE_BUCKET="procwatch-tfstate"
 
 gsutil mb -p $PROJECT_ID -l EU gs://$TF_STATE_BUCKET
 gsutil versioning set on gs://$TF_STATE_BUCKET
@@ -211,56 +124,88 @@ gsutil versioning set on gs://$TF_STATE_BUCKET
 ```bash
 cd envs/dev
 cp dev.tfvars.example dev.tfvars
-# Edit dev.tfvars with your project_id, region, etc.
+# Edit dev.tfvars — set project_id and region at minimum
 ```
 
-### 3. Initialize and Plan
+### 3. Initialize and Apply
 
 ```bash
 terraform init -backend-config="bucket=$TF_STATE_BUCKET"
-terraform plan -var-file=dev.tfvars
+terraform plan  -var-file=dev.tfvars
+terraform apply -var-file=dev.tfvars
 ```
 
-### 4. Apply
+Key outputs after apply:
+- `lakehouse_bucket` — `gs://{project_id}-lakehouse`
+- `artifact_registry_url` — base URL for Docker images
+- `spark_image_base` — base URI for the Spark container
+- `downloader_image_base` — base URI for the downloader container
+- `dataproc_subnet` — self-link to pass as `DATAPROC_SUBNET`
+
+### 4. Build and Push Container Images
+
+From the `procurement-watchdog-lakehouse` repository:
+
+```bash
+GIT_SHA=$(git rev-parse --short HEAD)
+REGION="europe-west1"
+PROJECT_ID="your-project-id"
+
+# Authenticate Docker to Artifact Registry
+gcloud auth configure-docker ${REGION}-docker.pkg.dev
+
+# Spark container (Dataproc Serverless batches)
+SPARK_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/spark/procurement-spark:${GIT_SHA}"
+docker build -f Dockerfile.spark --build-arg GIT_SHA=${GIT_SHA} -t ${SPARK_IMAGE} .
+docker push ${SPARK_IMAGE}
+
+# Downloader container (Cloud Run Job)
+DL_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/spark/procurement-downloader:${GIT_SHA}"
+docker build -f Dockerfile.downloader --build-arg GIT_SHA=${GIT_SHA} -t ${DL_IMAGE} .
+docker push ${DL_IMAGE}
+```
+
+Update `dataproc_container_image` in your tfvars and re-run `terraform apply`. This sets the `AIRFLOW_VAR_DATAPROC_CONTAINER_IMAGE` variable in Composer so the DAGs know which Spark image to use.
+
+### 5. Upload Pipeline Scripts to GCS
+
+```bash
+export LAKEHOUSE_BUCKET="${PROJECT_ID}-lakehouse"
+gsutil -m cp scripts/pipeline/*.py gs://${LAKEHOUSE_BUCKET}/jobs/
+```
+
+### 6. Enable Cloud Composer and Sync DAGs
+
+Set `enable_composer = true` in `dev.tfvars` (or it is already true in prod) and re-apply:
 
 ```bash
 terraform apply -var-file=dev.tfvars
 ```
 
-### 5. Build and Push Container Images
+Then sync the DAGs:
 
 ```bash
-# From the procurement-watchdog-lakehouse repository
-export REGION="europe-central2"
-export AR_REPO="$REGION-docker.pkg.dev/$PROJECT_ID/procwatch-pipeline"
+COMPOSER_ENV=$(terraform output -raw composer_dag_bucket)
+# e.g. gs://europe-west1-procwatch-composer-xxx-bucket/dags
 
-# Authenticate Docker to Artifact Registry
-gcloud auth configure-docker $REGION-docker.pkg.dev
-
-# Build and push downloader image
-docker build -t $AR_REPO/downloader:v1.0.0 -f Dockerfile.downloader .
-docker push $AR_REPO/downloader:v1.0.0
-
-# Build and push dispatcher image
-docker build -t $AR_REPO/dispatcher:v1.0.0 -f Dockerfile.dispatcher .
-docker push $AR_REPO/dispatcher:v1.0.0
-
-# Build and push launcher image
-docker build -t $AR_REPO/launcher:v1.0.0 -f Dockerfile.launcher .
-docker push $AR_REPO/launcher:v1.0.0
+gsutil -m cp dags/*.py ${COMPOSER_ENV}/
 ```
 
-### 6. Deploy to Production
+### 7. Create BigQuery External Iceberg Tables
+
+After the first pipeline run populates the silver layer:
 
 ```bash
-cd envs/prod
-cp prod.tfvars.example prod.tfvars
-# Edit prod.tfvars — use pinned image tags, not "latest"
+export RUNTIME_ENV=gcp
+export LAKEHOUSE_BUCKET="${PROJECT_ID}-lakehouse"
+export GCP_PROJECT="${PROJECT_ID}"
+export BQ_DATASET=procurement_silver
 
-terraform init -backend-config="bucket=procwatch-tfstate-prod"
-terraform plan -var-file=prod.tfvars
-terraform apply -var-file=prod.tfvars
+cd procurement-watchdog-lakehouse
+python scripts/ops/setup_bq_external_tables.py --format iceberg
 ```
+
+Re-run this script when new notice types are added or the silver schema changes.
 
 ---
 
@@ -270,71 +215,57 @@ terraform apply -var-file=prod.tfvars
 |----------|-------------|-------------|--------------|
 | `project_id` | GCP project ID | (required) | (required) |
 | `region` | GCP region | (required) | (required) |
-| `environment` | Environment name | `dev` | `prod` |
+| `environment` | Environment label | `dev` | `prod` |
 | `naming_prefix` | Resource name prefix | `procwatch` | `procwatch` |
-| `bucket_location` | GCS location | `EU` | `EU` |
-| `image_tag` | Container image tag | `latest` | `v1.0.0` |
-| `backfill_schedule_cron` | Backfill trigger cron | `0 */4 * * *` | `0 * * * *` |
-| `transformation_schedule_cron` | Spark trigger cron | `30 7 * * *` | `30 6 * * *` |
-| `max_backfill_concurrency` | Parallel download jobs | `2` | `5` |
-| `backfill_start_date` | Backfill window start | `2024-01-01` | `2024-01-01` |
-| `enable_bigquery_serving` | Create BQ layer | `false` | `true` |
-| `spark_properties` | Spark config overrides | `{}` | executor tuning |
+| `bucket_location` | GCS + BQ location | `EU` | `EU` |
+| `dataproc_subnet_cidr` | Dataproc subnet CIDR | `10.100.0.0/24` | `10.100.0.0/24` |
+| `downloader_image_tag` | Downloader image tag | `latest` | (required) |
+| `dataproc_container_image` | Spark image full URI | `""` | (required) |
+| `enable_composer` | Provision Airflow | `false` | `true` |
+| `composer_image_version` | Composer image version | `composer-2.9.7-airflow-2.9.3` | same |
+| `bq_silver_dataset_id` | Silver BQ dataset | `procurement_silver` | same |
+| `bq_obs_dataset_id` | Obs BQ dataset | `procurement_obs` | same |
+
+---
+
+## IAM Design
+
+Three service accounts with least-privilege access:
+
+| SA | Used by | Key permissions |
+|----|---------|-----------------|
+| `procwatch-downloader` | Cloud Run Job | `storage.objectAdmin` on lakehouse bucket |
+| `procwatch-pipeline` | Dataproc Serverless | `storage.objectAdmin` on lakehouse bucket, `dataproc.worker`, `bigquery.dataEditor` on both BQ datasets |
+| `procwatch-composer` | Cloud Composer workers | `storage.objectAdmin` on lakehouse bucket, `composer.worker`, `dataproc.editor`, `run.developer`, `iam.serviceAccountUser` on pipeline SA |
 
 ---
 
 ## Cost Considerations
 
-| Component | Cost Driver | Optimization |
-|-----------|-------------|-------------|
-| **Cloud Run Jobs** | vCPU-seconds + memory | Scale to zero between runs. 1 vCPU/1GB dev, 2 vCPU/2GB prod. |
-| **Cloud Run Services** | vCPU-seconds + memory | Scale to zero (min instances = 0). Only active during scheduler invocations. |
-| **GCS Storage** | Storage volume + operations | Lifecycle rules transition old bronze_raw to Nearline. Gold stays Standard for query performance. |
-| **Dataproc Serverless** | vCPU-hours + memory-hours | Dynamic allocation. No idle cluster costs. Batch jobs run and terminate. |
-| **BigQuery** | Bytes scanned per query | External tables = no storage cost. Partition pruning on date reduces scan volume. |
-| **Cloud Scheduler** | $0.10/job/month | Negligible (2 jobs). |
-| **Artifact Registry** | Storage volume | Minimal (a few container images). |
-
-### Estimated Monthly Cost (Prod, Steady State)
-
-- Backfill phase (one-time): ~$50-150 depending on date range and concurrency
-- Daily operations: ~$10-30/month (dominated by Dataproc Serverless compute)
-- Storage: scales with data volume (~$0.02/GB/month Standard, less with lifecycle rules)
+| Component | Cost Driver |
+|-----------|-------------|
+| **Cloud Composer** | Dominant cost — ~$300-500/month for a small environment. Disabled in dev by default. |
+| **Dataproc Serverless** | Per vCPU-hour + memory-hour. No idle cluster costs. Scales per batch. |
+| **Cloud Run Job** | Per vCPU-second + memory-second. Only runs when triggered. |
+| **GCS** | Storage volume. Single bucket with folder prefixes keeps costs low. |
+| **BigQuery** | Bytes scanned per query (external tables — no storage cost). |
+| **Artifact Registry** | Storage for container images. |
 
 ---
 
 ## Security
 
-- **No secrets in Terraform.** All authentication uses GCP service accounts with Workload Identity.
-- **Least-privilege IAM.** Each component has a dedicated service account with only the permissions it needs.
-- **Bucket-level IAM** (not project-level). Downloader can only write to bronze_raw + state. Pipeline runtime can read bronze_raw and write downstream layers.
-- **Internal-only ingress** on dispatcher and launcher services. Only Cloud Scheduler (via OIDC) can invoke them.
-- **No hardcoded project IDs.** All resource names are parameterized.
+- **No secrets in Terraform.** Authentication via GCP service accounts and Workload Identity.
+- **Least-privilege IAM.** Each service account has exactly the permissions it needs — no project-wide Editor/Owner.
+- **Bucket-level IAM.** Downloader, pipeline, and Composer SAs each have `objectAdmin` on the single lakehouse bucket.
+- **Private Google Access.** Dataproc Serverless workers use a dedicated subnet with PGA — no public IPs needed.
+- **No hardcoded project IDs.** All resource names are parameterized via variables.
 
 ---
 
 ## What NOT to Commit
 
-- `*.tfvars` files (contain project-specific configuration)
-- `*.tfstate` files (managed by remote backend)
-- `.terraform/` directory (provider plugins, downloaded on init)
-- Service account key files (`.json` credentials)
-- `.env` files
-
-These are all covered by `.gitignore`.
-
----
-
-## FAQ
-
-**Q: Why not use BigQuery as the primary data store?**
-A: Gold Parquet in GCS is the canonical data format. It is portable (not locked to BigQuery), cheaper for storage, and directly consumable by Spark, Pandas, DuckDB, or any Parquet-aware tool. BigQuery external tables give us SQL query capability and Looker Studio connectivity without data duplication.
-
-**Q: Why not manage Spark batch jobs in Terraform?**
-A: Spark batch jobs are ephemeral compute — they run, process data, and terminate. Terraform manages durable infrastructure (buckets, service accounts, schedulers). The launcher service handles dynamic batch submission with runtime parameters.
-
-**Q: Why Cloud Run instead of Cloud Functions?**
-A: Cloud Run Jobs support longer timeouts (up to 24h), larger memory, and custom container images. The pipeline's Docker image includes Java/Spark dependencies that exceed Cloud Functions limits.
-
-**Q: How do I re-run a specific backfill date?**
-A: Delete the corresponding marker from the state bucket (`gsutil rm gs://<state-bucket>/backfill/dt=YYYY-MM-DD.done`) and the dispatcher will re-trigger it on next invocation.
+- `*.tfvars` (contain project-specific config — covered by `.gitignore`)
+- `*.tfstate` (managed by remote backend)
+- `.terraform/` (downloaded on `terraform init`)
+- Service account key JSON files
