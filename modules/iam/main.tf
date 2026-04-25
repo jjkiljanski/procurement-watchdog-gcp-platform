@@ -80,6 +80,12 @@ resource "google_project_iam_member" "pipeline_bq_job_user" {
   member  = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
+resource "google_project_iam_member" "pipeline_ar_reader" {
+  project = var.project_id
+  role    = "roles/artifactregistry.reader"
+  member  = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
 # --------------------------------------------------------------------------- #
 # Project-Level IAM — Orchestrator SA (Cloud Workflows)
 # --------------------------------------------------------------------------- #
