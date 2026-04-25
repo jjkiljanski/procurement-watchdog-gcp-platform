@@ -20,3 +20,26 @@ resource "google_compute_subnetwork" "dataproc" {
   ip_cidr_range            = var.subnet_cidr
   private_ip_google_access = true
 }
+
+# Dataproc Serverless requires all-ports ingress within the subnet so Spark
+# workers can register with the driver. The default VPC allow-internal rule
+# only covers 10.128.0.0/9 and does not reach our custom CIDR.
+resource "google_compute_firewall" "dataproc_internal" {
+  name    = "${var.naming_prefix}-dataproc-internal"
+  project = var.project_id
+  network = data.google_compute_network.vpc.id
+
+  direction     = "INGRESS"
+  priority      = 1000
+  source_ranges = [var.subnet_cidr]
+
+  allow {
+    protocol = "tcp"
+  }
+  allow {
+    protocol = "udp"
+  }
+  allow {
+    protocol = "icmp"
+  }
+}
