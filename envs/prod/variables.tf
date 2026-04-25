@@ -35,11 +35,6 @@ variable "dataproc_subnet_cidr" {
   default = "10.100.0.0/24"
 }
 
-variable "downloader_image_tag" {
-  description = "Pin to a specific release tag in prod."
-  type        = string
-  default     = "latest"
-}
 
 variable "dataproc_container_image" {
   description = "Full Artifact Registry URI for the Dataproc Spark container. Required for the pipeline to run."

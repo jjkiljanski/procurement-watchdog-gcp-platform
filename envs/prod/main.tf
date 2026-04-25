@@ -119,9 +119,7 @@ module "downloader" {
   region                = var.region
   environment           = var.environment
   downloader_sa_email   = module.iam.downloader_sa_email
-  artifact_registry_url = module.artifact_registry.repository_url
   lakehouse_bucket      = module.storage.bucket_name
-  image_tag             = var.downloader_image_tag
   bq_obs_dataset_id     = var.bq_obs_dataset_id
   cpu_limit             = "2"
   memory_limit          = "2Gi"

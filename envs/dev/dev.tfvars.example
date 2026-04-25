@@ -17,14 +17,9 @@ bq_location     = "EU"
 
 dataproc_subnet_cidr = "10.100.0.0/24"
 
-# Leave empty until after first docker build & push — a public placeholder is used on first apply.
-# After building: set to your git SHA tag, e.g. "abc1234", then re-apply.
-downloader_image_tag = ""
-
-# Spark image is NOT managed by Terraform — pass container_image at workflow runtime:
-#   --data '{"container_image":"europe-west1-docker.pkg.dev/my-gcp-project-dev/spark/procurement-spark:abc1234",...}'
-# For scheduled runs, update the Cloud Scheduler body after each image build:
-#   gcloud scheduler jobs update http bzp-daily-trigger --location=REGION --message-body='{"argument":"{...}"}'
+# Images are NOT managed by Terraform — CI updates them directly after each build:
+#   Downloader: gcloud run jobs update bzp-downloader --image=<AR>/procurement-downloader:<SHA> --region=REGION
+#   Spark:      gcloud scheduler jobs update http bzp-daily-trigger --location=REGION --message-body='{"argument":"{...container_image:<SHA>...}"}'
 
 # Daily pipeline schedule — 03:00 UTC
 schedule_cron = "0 3 * * *"

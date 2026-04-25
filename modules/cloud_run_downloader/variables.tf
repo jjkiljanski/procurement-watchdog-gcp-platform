@@ -24,20 +24,9 @@ variable "downloader_sa_email" {
   type        = string
 }
 
-variable "artifact_registry_url" {
-  description = "Base URL of the Artifact Registry Docker repository (without image name)."
-  type        = string
-}
-
 variable "lakehouse_bucket" {
   description = "Name of the lakehouse GCS bucket (without gs:// prefix)."
   type        = string
-}
-
-variable "image_tag" {
-  description = "Docker image tag for the downloader image (e.g. a git SHA). Leave empty before the first build — a public placeholder is used until a real image is available."
-  type        = string
-  default     = ""
 }
 
 variable "job_timeout" {

@@ -7,9 +7,10 @@
 ################################################################################
 
 locals {
-  # Empty image_tag means the image hasn't been built yet — use a public placeholder
-  # so the job resource can be created. Set image_tag in tfvars after the first build.
-  image = var.image_tag == "" ? "us-docker.pkg.dev/cloudrun/container/hello:latest" : "${var.artifact_registry_url}/procurement-downloader:${var.image_tag}"
+  # Placeholder image used on first apply. CI updates the job image after each build:
+  #   gcloud run jobs update bzp-downloader --image=<AR_URL>/procurement-downloader:<SHA> --region=REGION
+  # Terraform ignores image changes (see lifecycle below) so it never reverts CI updates.
+  image = "us-docker.pkg.dev/cloudrun/container/hello:latest"
 }
 
 resource "google_cloud_run_v2_job" "downloader" {
@@ -70,6 +71,6 @@ resource "google_cloud_run_v2_job" "downloader" {
   }
 
   lifecycle {
-    ignore_changes = [launch_stage]
+    ignore_changes = [launch_stage, template]
   }
 }
