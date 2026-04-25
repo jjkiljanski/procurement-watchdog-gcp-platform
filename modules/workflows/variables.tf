@@ -38,11 +38,6 @@ variable "dataproc_subnet_self_link" {
   type        = string
 }
 
-variable "dataproc_container_image" {
-  description = "Full Artifact Registry URI for the Dataproc Spark container. Leave empty before first image build."
-  type        = string
-  default     = ""
-}
 
 variable "downloader_job_name" {
   description = "Cloud Run Job name for the BZP downloader."

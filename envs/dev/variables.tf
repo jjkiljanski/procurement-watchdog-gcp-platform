@@ -47,11 +47,6 @@ variable "downloader_image_tag" {
   default     = ""
 }
 
-variable "dataproc_container_image" {
-  description = "Full Artifact Registry URI for the Dataproc Spark container. Set after the first image build."
-  type        = string
-  default     = ""
-}
 
 variable "bq_location" {
   description = "BigQuery dataset location. Should match bucket_location."

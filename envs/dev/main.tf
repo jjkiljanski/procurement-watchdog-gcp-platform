@@ -156,7 +156,6 @@ module "workflows" {
   lakehouse_bucket          = module.storage.bucket_name
   pipeline_sa_email         = module.iam.pipeline_sa_email
   dataproc_subnet_self_link = module.network.dataproc_subnet_self_link
-  dataproc_container_image  = var.dataproc_container_image
   downloader_job_name       = module.downloader.job_name
   bq_silver_dataset_id      = var.bq_silver_dataset_id
   bq_obs_dataset_id         = var.bq_obs_dataset_id
@@ -184,6 +183,7 @@ output "spark_image_base" {
   description = "Base URI for the Spark container image (append :<git-sha>)."
   value       = module.artifact_registry.spark_image_base
 }
+
 
 output "downloader_image_base" {
   description = "Base URI for the downloader container image (append :<git-sha>)."

@@ -22,7 +22,6 @@ locals {
     project             = var.project_id
     region              = var.region
     bucket              = var.lakehouse_bucket
-    container_image     = var.dataproc_container_image
     subnet              = var.dataproc_subnet_self_link
     jobs_prefix         = "gs://${var.lakehouse_bucket}/jobs"
     downloader_job_name = var.downloader_job_name
