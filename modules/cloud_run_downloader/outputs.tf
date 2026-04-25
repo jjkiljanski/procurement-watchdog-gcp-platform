@@ -1,5 +1,5 @@
 output "job_name" {
-  description = "Cloud Run Job name (use as downloader_job_name Airflow Variable)."
+  description = "Cloud Run Job name (referenced by Cloud Workflows as downloader_job_name)."
   value       = google_cloud_run_v2_job.downloader.name
 }
 

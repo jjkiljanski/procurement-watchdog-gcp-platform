@@ -96,6 +96,12 @@ resource "google_project_iam_member" "orchestrator_dataproc_editor" {
   member  = "serviceAccount:${google_service_account.orchestrator.email}"
 }
 
+resource "google_project_iam_member" "orchestrator_logging" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.orchestrator.email}"
+}
+
 # --------------------------------------------------------------------------- #
 # SA-Level IAM — Orchestrator acts as Pipeline SA for Dataproc batch submissions
 # (Dataproc batch requests specify service_account=pipeline_sa; orchestrator

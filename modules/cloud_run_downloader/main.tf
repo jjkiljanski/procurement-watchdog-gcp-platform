@@ -2,8 +2,8 @@
 # Cloud Run Downloader Job — bzp-downloader
 #
 # Executes apps/downloader/main.py which wraps fetch_bzp_yesterday.py (or
-# fetch_bzp_range.py for backfill). Triggered by Airflow daily_dag and
-# backfill_dag with TARGET_DATE / START_DATE / END_DATE env overrides.
+# fetch_bzp_range.py for backfill). Triggered by Cloud Workflows (bzp-daily /
+# bzp-backfill) with TARGET_DATE overridden per execution via containerOverrides.
 ################################################################################
 
 locals {
@@ -55,8 +55,13 @@ resource "google_cloud_run_v2_job" "downloader" {
         }
 
         env {
+          name  = "BQ_OBS_DATASET"
+          value = var.bq_obs_dataset_id
+        }
+
+        env {
           name  = "TARGET_DATE"
-          value = "PLACEHOLDER"  # Overridden at execution time by Airflow DAG
+          value = "PLACEHOLDER"  # Overridden at execution time via Cloud Workflows containerOverrides
         }
       }
     }

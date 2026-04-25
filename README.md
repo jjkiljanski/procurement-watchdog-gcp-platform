@@ -9,50 +9,50 @@ Ingests Polish public procurement data (BZP) via the BZP API, transforms it thro
 ## Architecture
 
 ```
-                    BZP API
-                       │
-                       ▼
-          ┌────────────────────────┐
-          │   Cloud Run Job        │  bzp-downloader
-          │   (fetch_bzp_...)      │  triggered by Airflow daily DAG
-          └───────────┬────────────┘
-                      │ writes JSON
-                      ▼
-          ┌────────────────────────┐
-          │   GCS bucket           │  {project_id}-lakehouse
-          │   /bronze_raw/         │  bzp_YYYY-MM-DD.json
-          └───────────┬────────────┘
-                      │
-                      ▼
-          ┌────────────────────────┐
-          │  Dataproc Serverless   │  procurement-spark image
-          │  build_bronze.py       │  → /bronze/notices/...
-          └───────────┬────────────┘
-                      │
-                      ▼
-          ┌────────────────────────┐
-          │  Dataproc Serverless   │
-          │  build_silver_day.py   │  → /iceberg/notice_type_tables/
-          │                        │    /iceberg/common/
-          └───────────┬────────────┘
-                      │
-                      ▼
-          ┌────────────────────────┐
-          │  Dataproc Serverless   │
-          │  build_silver_         │  → /iceberg/notice_update_deltas/
-          │  update_deltas.py      │
-          └───────────┬────────────┘
-                      │
-                      ▼
-          ┌────────────────────────┐
-          │  BigQuery              │  created by setup_bq_external_tables.py
-          │  external Iceberg      │  dataset: procurement_silver
-          │  tables over silver    │
-          └────────────────────────┘
-
-   Cloud Composer (Airflow) orchestrates all steps
-   dags/daily_dag.py   — 03:00 UTC daily
-   dags/backfill_dag.py — manual trigger
+   Cloud Scheduler (bzp-daily-trigger, 03:00 UTC)
+          │
+          ▼
+   Cloud Workflows (bzp-daily)
+          │
+          │ step 1: Cloud Run Job
+          ▼
+   ┌────────────────────────┐
+   │   Cloud Run Job        │  bzp-downloader
+   │   fetch_bzp_yesterday  │  writes bronze_raw JSON
+   └───────────┬────────────┘
+               │
+               ▼
+   ┌────────────────────────┐
+   │   GCS bucket           │  {project_id}-lakehouse
+   │   /bronze_raw/         │  bzp_YYYY-MM-DD.json
+   └───────────┬────────────┘
+               │ step 2: Dataproc Serverless
+               ▼
+   ┌────────────────────────┐
+   │  Dataproc Serverless   │  procurement-spark image
+   │  build_bronze.py       │  → /bronze/notices/noticeType=*/publicationDateDay=*/
+   └───────────┬────────────┘
+               │ step 3
+               ▼
+   ┌────────────────────────┐
+   │  Dataproc Serverless   │
+   │  build_silver_day.py   │  → /iceberg/notice_type_tables/
+   │                        │    /iceberg/common/
+   └───────────┬────────────┘
+               │ step 4
+               ▼
+   ┌────────────────────────┐
+   │  Dataproc Serverless   │
+   │  build_silver_         │  → /iceberg/notice_update_deltas/
+   │  update_deltas.py      │
+   └───────────┬────────────┘
+               │
+               ▼
+   ┌────────────────────────┐
+   │  BigQuery              │  created by setup_bq_external_tables.py
+   │  external Iceberg      │  dataset: procurement_silver
+   │  tables over silver    │
+   └────────────────────────┘
 ```
 
 ---
@@ -68,7 +68,7 @@ procurement-watchdog-gcp-platform/
 │   ├── artifact_registry/        # Docker registry (spark repo)
 │   ├── cloud_run_downloader/     # bzp-downloader Cloud Run Job
 │   ├── bigquery/                 # procurement_silver + procurement_obs datasets
-│   └── composer/                 # Cloud Composer v2 (managed Airflow)
+│   └── workflows/                # Cloud Workflows (bzp-daily) + Cloud Scheduler
 ├── envs/
 │   ├── dev/                      # Dev environment config
 │   │   ├── backend.tf
@@ -92,11 +92,12 @@ procurement-watchdog-gcp-platform/
 |---------|---------|--------|
 | **GCS bucket** | bronze_raw, bronze, silver (Iceberg), jobs, _processed | `storage` |
 | **Subnet** | Dataproc Serverless workers (Private Google Access) | `network` |
-| **Service Accounts** | downloader, pipeline, composer (least-privilege) | `iam` |
+| **Service Accounts** | downloader, pipeline, orchestrator (least-privilege) | `iam` |
 | **Artifact Registry** | Docker images: procurement-spark, procurement-downloader | `artifact_registry` |
 | **Cloud Run Job** | `bzp-downloader` — fetches BZP API data | `cloud_run_downloader` |
 | **BigQuery datasets** | `procurement_silver`, `procurement_obs` | `bigquery` |
-| **Cloud Composer** | Managed Airflow — daily_dag and backfill_dag | `composer` |
+| **Cloud Workflows** | `bzp-daily` — orchestrates the 4-step daily pipeline | `workflows` |
+| **Cloud Scheduler** | `bzp-daily-trigger` — fires `bzp-daily` at 03:00 UTC | `workflows` |
 
 ---
 
@@ -138,9 +139,10 @@ terraform apply -var-file=dev.tfvars
 Key outputs after apply:
 - `lakehouse_bucket` — `gs://{project_id}-lakehouse`
 - `artifact_registry_url` — base URL for Docker images
-- `spark_image_base` — base URI for the Spark container
-- `downloader_image_base` — base URI for the downloader container
+- `spark_image_base` — base URI for the Spark container (append `:<tag>`)
+- `downloader_image_base` — base URI for the downloader container (append `:<tag>`)
 - `dataproc_subnet` — self-link to pass as `DATAPROC_SUBNET`
+- `workflow_name` — `bzp-daily`
 
 ### 4. Build and Push Container Images
 
@@ -165,7 +167,7 @@ docker build -f Dockerfile.downloader --build-arg GIT_SHA=${GIT_SHA} -t ${DL_IMA
 docker push ${DL_IMAGE}
 ```
 
-Update `dataproc_container_image` in your tfvars and re-run `terraform apply`. This sets the `AIRFLOW_VAR_DATAPROC_CONTAINER_IMAGE` variable in Composer so the DAGs know which Spark image to use.
+Set `dataproc_container_image = "${SPARK_IMAGE}"` in your tfvars and re-run `terraform apply`.
 
 ### 5. Upload Pipeline Scripts to GCS
 
@@ -174,24 +176,7 @@ export LAKEHOUSE_BUCKET="${PROJECT_ID}-lakehouse"
 gsutil -m cp scripts/pipeline/*.py gs://${LAKEHOUSE_BUCKET}/jobs/
 ```
 
-### 6. Enable Cloud Composer and Sync DAGs
-
-Set `enable_composer = true` in `dev.tfvars` (or it is already true in prod) and re-apply:
-
-```bash
-terraform apply -var-file=dev.tfvars
-```
-
-Then sync the DAGs:
-
-```bash
-COMPOSER_ENV=$(terraform output -raw composer_dag_bucket)
-# e.g. gs://europe-west1-procwatch-composer-xxx-bucket/dags
-
-gsutil -m cp dags/*.py ${COMPOSER_ENV}/
-```
-
-### 7. Create BigQuery External Iceberg Tables
+### 6. Create BigQuery External Iceberg Tables
 
 After the first pipeline run populates the silver layer:
 
@@ -207,6 +192,14 @@ python scripts/ops/setup_bq_external_tables.py --format iceberg
 
 Re-run this script when new notice types are added or the silver schema changes.
 
+### Trigger a Manual Run
+
+```bash
+gcloud workflows run bzp-daily \
+  --location=europe-west1 \
+  --data='{"target_date":"2025-03-15"}'
+```
+
 ---
 
 ## Configuration Variables
@@ -220,11 +213,11 @@ Re-run this script when new notice types are added or the silver schema changes.
 | `bucket_location` | GCS + BQ location | `EU` | `EU` |
 | `dataproc_subnet_cidr` | Dataproc subnet CIDR | `10.100.0.0/24` | `10.100.0.0/24` |
 | `downloader_image_tag` | Downloader image tag | `latest` | (required) |
-| `dataproc_container_image` | Spark image full URI | `""` | (required) |
-| `enable_composer` | Provision Airflow | `false` | `true` |
-| `composer_image_version` | Composer image version | `composer-2.9.7-airflow-2.9.3` | same |
+| `dataproc_container_image` | Spark image full URI | `""` (set after first build) | (required) |
 | `bq_silver_dataset_id` | Silver BQ dataset | `procurement_silver` | same |
-| `bq_obs_dataset_id` | Obs BQ dataset | `procurement_obs` | same |
+| `bq_obs_dataset_id` | Observability BQ dataset | `procurement_obs` | same |
+| `schedule_cron` | Pipeline cron schedule (UTC) | `0 3 * * *` | same |
+| `time_zone` | Scheduler UI timezone | `Europe/Warsaw` | same |
 
 ---
 
@@ -235,8 +228,9 @@ Three service accounts with least-privilege access:
 | SA | Used by | Key permissions |
 |----|---------|-----------------|
 | `procwatch-downloader` | Cloud Run Job | `storage.objectAdmin` on lakehouse bucket |
-| `procwatch-pipeline` | Dataproc Serverless | `storage.objectAdmin` on lakehouse bucket, `dataproc.worker`, `bigquery.dataEditor` on both BQ datasets |
-| `procwatch-composer` | Cloud Composer workers | `storage.objectAdmin` on lakehouse bucket, `composer.worker`, `dataproc.editor`, `run.developer`, `iam.serviceAccountUser` on pipeline SA |
+| `procwatch-pipeline` | Dataproc Serverless batches | `storage.objectAdmin` on lakehouse bucket, `dataproc.worker`, `bigquery.dataEditor` on both BQ datasets |
+| `procwatch-orchestrator` | Cloud Workflows | `run.developer` (submit Cloud Run Job executions), `dataproc.editor` (submit batches), `logging.logWriter` (sys.log calls), `iam.serviceAccountUser` on pipeline SA |
+| `procwatch-sched-invoke` | Cloud Scheduler | `workflows.invoker` on the `bzp-daily` workflow |
 
 ---
 
@@ -244,11 +238,11 @@ Three service accounts with least-privilege access:
 
 | Component | Cost Driver |
 |-----------|-------------|
-| **Cloud Composer** | Dominant cost — ~$300-500/month for a small environment. Disabled in dev by default. |
 | **Dataproc Serverless** | Per vCPU-hour + memory-hour. No idle cluster costs. Scales per batch. |
-| **Cloud Run Job** | Per vCPU-second + memory-second. Only runs when triggered. |
+| **Cloud Run Job** | Per vCPU-second + memory-second. Only runs when triggered (~minutes/day). |
+| **Cloud Workflows** | Per step executed (~$0.01/execution). Negligible. |
 | **GCS** | Storage volume. Single bucket with folder prefixes keeps costs low. |
-| **BigQuery** | Bytes scanned per query (external tables — no storage cost). |
+| **BigQuery** | Bytes scanned per query (external tables — no storage cost for silver data). |
 | **Artifact Registry** | Storage for container images. |
 
 ---
@@ -257,7 +251,7 @@ Three service accounts with least-privilege access:
 
 - **No secrets in Terraform.** Authentication via GCP service accounts and Workload Identity.
 - **Least-privilege IAM.** Each service account has exactly the permissions it needs — no project-wide Editor/Owner.
-- **Bucket-level IAM.** Downloader, pipeline, and Composer SAs each have `objectAdmin` on the single lakehouse bucket.
+- **Bucket-level IAM.** Downloader, pipeline, and orchestrator SAs each get `objectAdmin` on the single lakehouse bucket.
 - **Private Google Access.** Dataproc Serverless workers use a dedicated subnet with PGA — no public IPs needed.
 - **No hardcoded project IDs.** All resource names are parameterized via variables.
 

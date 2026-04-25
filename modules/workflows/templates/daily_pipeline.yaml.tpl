@@ -4,7 +4,7 @@
 # Only `target_date` is a runtime arg (defaults to yesterday if omitted).
 #
 # Trigger manually for a specific date:
-#   gcloud workflows run ${workflow_name} --location=${region} \
+#   gcloud workflows run bzp-daily --location=<REGION> \
 #     --data='{"target_date":"2025-03-15"}'
 #
 # The googleapis connectors below automatically poll long-running operations:
@@ -85,6 +85,7 @@ main:
           dataproc_sa: $${dataproc_sa}
           dataproc_subnet: $${dataproc_subnet}
           dataproc_image: $${dataproc_image}
+          bq_obs_dataset: $${bq_obs_dataset}
         result: bronze_result
 
     - log_bronze_done:
@@ -108,6 +109,7 @@ main:
           dataproc_sa: $${dataproc_sa}
           dataproc_subnet: $${dataproc_subnet}
           dataproc_image: $${dataproc_image}
+          bq_obs_dataset: $${bq_obs_dataset}
         result: silver_result
 
     - log_silver_done:
@@ -131,6 +133,7 @@ main:
           dataproc_sa: $${dataproc_sa}
           dataproc_subnet: $${dataproc_subnet}
           dataproc_image: $${dataproc_image}
+          bq_obs_dataset: $${bq_obs_dataset}
         result: deltas_result
 
     - done:
@@ -154,7 +157,7 @@ main:
 # --------------------------------------------------------------------------- #
 
 submit_batch:
-  params: [project_id, region, script_path, target_date, lakehouse_bucket, dataproc_sa, dataproc_subnet, dataproc_image]
+  params: [project_id, region, script_path, target_date, lakehouse_bucket, dataproc_sa, dataproc_subnet, dataproc_image, bq_obs_dataset]
   steps:
     - run_batch:
         call: googleapis.dataproc.v1.projects.regions.batches.create
@@ -164,7 +167,7 @@ submit_batch:
             pysparkBatch:
               mainPythonFileUri: $${script_path}
               args:
-                - $${"--date=" + target_date}
+                - $${target_date}
               jarFileUris:
                 - file:///opt/iceberg-spark-runtime.jar
             environmentConfig:
@@ -178,10 +181,12 @@ submit_batch:
                 "spark.kubernetes.driverEnv.LAKEHOUSE_BUCKET": $${lakehouse_bucket}
                 "spark.kubernetes.driverEnv.GCP_PROJECT": $${project_id}
                 "spark.kubernetes.driverEnv.DATAPROC_REGION": $${region}
+                "spark.kubernetes.driverEnv.BQ_OBS_DATASET": $${bq_obs_dataset}
                 "spark.executorEnv.RUNTIME_ENV": gcp
                 "spark.executorEnv.LAKEHOUSE_BUCKET": $${lakehouse_bucket}
                 "spark.executorEnv.GCP_PROJECT": $${project_id}
                 "spark.executorEnv.DATAPROC_REGION": $${region}
+                "spark.executorEnv.BQ_OBS_DATASET": $${bq_obs_dataset}
         connector_params:
           timeout: 7200
           polling_policy:

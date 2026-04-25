@@ -31,7 +31,7 @@ locals {
 # --------------------------------------------------------------------------- #
 
 resource "google_workflows_workflow" "daily" {
-  name            = "${var.naming_prefix}-daily-pipeline"
+  name            = "bzp-daily"
   project         = var.project_id
   region          = var.region
   service_account = var.orchestrator_sa_email
@@ -51,8 +51,8 @@ resource "google_workflows_workflow" "daily" {
 resource "google_service_account" "scheduler_invoker" {
   project      = var.project_id
   account_id   = "${var.naming_prefix}-sched-invoke"
-  display_name = "Cloud Scheduler Invoker SA"
-  description  = "Identity used by Cloud Scheduler to trigger Cloud Workflows executions."
+  display_name = "Cloud Scheduler → Workflows Invoker SA"
+  description  = "Identity used by Cloud Scheduler to trigger the bzp-daily Cloud Workflows execution."
 }
 
 resource "google_workflows_workflow_iam_member" "scheduler_can_invoke" {
@@ -68,10 +68,10 @@ resource "google_workflows_workflow_iam_member" "scheduler_can_invoke" {
 # --------------------------------------------------------------------------- #
 
 resource "google_cloud_scheduler_job" "daily" {
-  name        = "${var.naming_prefix}-daily-pipeline"
+  name        = "bzp-daily-trigger"
   project     = var.project_id
   region      = var.region
-  description = "Triggers the daily BZP pipeline workflow."
+  description = "Triggers the bzp-daily Cloud Workflows execution at the configured cron schedule."
   schedule    = var.schedule_cron
   time_zone   = var.time_zone
 
