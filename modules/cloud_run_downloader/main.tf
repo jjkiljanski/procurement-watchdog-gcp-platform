@@ -7,7 +7,9 @@
 ################################################################################
 
 locals {
-  image = "${var.artifact_registry_url}/procurement-downloader:${var.image_tag}"
+  # Empty image_tag means the image hasn't been built yet — use a public placeholder
+  # so the job resource can be created. Set image_tag in tfvars after the first build.
+  image = var.image_tag == "" ? "us-docker.pkg.dev/cloudrun/container/hello:latest" : "${var.artifact_registry_url}/procurement-downloader:${var.image_tag}"
 }
 
 resource "google_cloud_run_v2_job" "downloader" {
@@ -68,11 +70,6 @@ resource "google_cloud_run_v2_job" "downloader" {
   }
 
   lifecycle {
-    # Allow CI/CD to update the image tag and env overrides without Terraform drift
-    ignore_changes = [
-      template[0].template[0].containers[0].image,
-      template[0].template[0].containers[0].env,
-      launch_stage,
-    ]
+    ignore_changes = [launch_stage]
   }
 }

@@ -35,9 +35,9 @@ variable "lakehouse_bucket" {
 }
 
 variable "image_tag" {
-  description = "Docker image tag for the downloader image."
+  description = "Docker image tag for the downloader image (e.g. a git SHA). Leave empty before the first build — a public placeholder is used until a real image is available."
   type        = string
-  default     = "latest"
+  default     = ""
 }
 
 variable "job_timeout" {

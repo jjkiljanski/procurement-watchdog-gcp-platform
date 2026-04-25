@@ -11,8 +11,8 @@
 #   - run.v2 jobs.run   → waits for the Cloud Run Job execution to finish
 #   - dataproc.v1 batches.create → waits for the full Spark batch to finish
 #
-# $${...} = Cloud Workflows expression (becomes ${...} in final YAML)
-# ${...}  = Terraform template variable (resolved at terraform apply time)
+# double-dollar prefix = Cloud Workflows runtime expression, rendered as a dollar-brace expr in deployed YAML
+# single-dollar prefix = Terraform templatefile variable, substituted at plan/apply time
 
 main:
   params: [args]
@@ -53,6 +53,8 @@ main:
     - step_1_download:
         call: googleapis.run.v2.projects.locations.jobs.run
         args:
+          connector_params:
+            timeout: 3600
           name: $${"projects/" + project_id + "/locations/" + region + "/jobs/" + downloader_job}
           body:
             overrides:
@@ -60,8 +62,6 @@ main:
                 - env:
                     - name: TARGET_DATE
                       value: $${target_date}
-        connector_params:
-          timeout: 3600
         result: download_result
 
     - log_download_done:
@@ -159,10 +159,12 @@ main:
 submit_batch:
   params: [project_id, region, script_path, target_date, lakehouse_bucket, dataproc_sa, dataproc_subnet, dataproc_image, bq_obs_dataset]
   steps:
-    - run_batch:
-        call: googleapis.dataproc.v1.projects.regions.batches.create
+    - create_batch:
+        call: http.post
         args:
-          parent: $${"projects/" + project_id + "/regions/" + region}
+          url: $${"https://dataproc.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/batches"}
+          auth:
+            type: OAuth2
           body:
             pysparkBatch:
               mainPythonFileUri: $${script_path}
@@ -174,25 +176,47 @@ submit_batch:
               executionConfig:
                 serviceAccount: $${dataproc_sa}
                 subnetworkUri: $${dataproc_subnet}
+                environmentVariables:
+                  RUNTIME_ENV: gcp
+                  LAKEHOUSE_BUCKET: $${lakehouse_bucket}
+                  GCP_PROJECT: $${project_id}
+                  DATAPROC_REGION: $${region}
+                  BQ_OBS_DATASET: $${bq_obs_dataset}
             runtimeConfig:
               containerImage: $${dataproc_image}
               properties:
-                "spark.kubernetes.driverEnv.RUNTIME_ENV": gcp
-                "spark.kubernetes.driverEnv.LAKEHOUSE_BUCKET": $${lakehouse_bucket}
-                "spark.kubernetes.driverEnv.GCP_PROJECT": $${project_id}
-                "spark.kubernetes.driverEnv.DATAPROC_REGION": $${region}
-                "spark.kubernetes.driverEnv.BQ_OBS_DATASET": $${bq_obs_dataset}
-                "spark.executorEnv.RUNTIME_ENV": gcp
-                "spark.executorEnv.LAKEHOUSE_BUCKET": $${lakehouse_bucket}
-                "spark.executorEnv.GCP_PROJECT": $${project_id}
-                "spark.executorEnv.DATAPROC_REGION": $${region}
-                "spark.executorEnv.BQ_OBS_DATASET": $${bq_obs_dataset}
-        connector_params:
-          timeout: 7200
-          polling_policy:
-            initial_delay: 30
-            multiplier: 1.5
-            max_delay: 120
-        result: batch_result
-    - return_result:
-        return: $${batch_result}
+                spark.executorEnv.RUNTIME_ENV: gcp
+                spark.executorEnv.LAKEHOUSE_BUCKET: $${lakehouse_bucket}
+                spark.executorEnv.GCP_PROJECT: $${project_id}
+                spark.executorEnv.DATAPROC_REGION: $${region}
+                spark.executorEnv.BQ_OBS_DATASET: $${bq_obs_dataset}
+        result: create_result
+    - init_poll:
+        assign:
+          - batch_name: $${create_result.body.name}
+          - batch_state: $${create_result.body.state}
+    - check_state:
+        switch:
+          - condition: $${batch_state == "SUCCEEDED"}
+            next: return_success
+          - condition: $${batch_state == "FAILED" or batch_state == "CANCELLED"}
+            next: raise_error
+    - wait:
+        call: sys.sleep
+        args:
+          seconds: 30
+    - poll:
+        call: http.get
+        args:
+          url: $${"https://dataproc.googleapis.com/v1/" + batch_name}
+          auth:
+            type: OAuth2
+        result: poll_result
+    - update_state:
+        assign:
+          - batch_state: $${poll_result.body.state}
+        next: check_state
+    - return_success:
+        return: $${batch_name}
+    - raise_error:
+        raise: $${"Batch " + batch_name + " ended with state " + batch_state}

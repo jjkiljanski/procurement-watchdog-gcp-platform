@@ -6,23 +6,26 @@
 #   - Cloud Scheduler job (triggers the workflow daily at var.schedule_cron)
 #   - Scheduler invoker service account + roles/workflows.invoker binding
 #
-# The workflow YAML is rendered from templates/daily_pipeline.yaml.tpl at
-# terraform apply time. Static config (project, bucket, SAs, etc.) is baked
-# in; only target_date is a runtime arg (defaults to yesterday).
+# The workflow YAML source lives in the lakehouse repo (workflows/daily.yaml)
+# and is deployed there via:
+#   gcloud workflows deploy bzp-daily --source workflows/daily.yaml ...
+#
+# Terraform manages the resource, IAM, and scheduler but does NOT overwrite
+# the YAML source on apply (ignore_changes = [source_contents]).
+# The scheduler passes all pipeline config as runtime args so the YAML stays
+# environment-agnostic and the lakehouse repo remains the single source of truth.
 ################################################################################
 
 locals {
-  daily_workflow_source = templatefile("${path.module}/templates/daily_pipeline.yaml.tpl", {
-    project_id                = var.project_id
-    region                    = var.region
-    lakehouse_bucket          = var.lakehouse_bucket
-    pipeline_sa_email         = var.pipeline_sa_email
-    dataproc_subnet_self_link = var.dataproc_subnet_self_link
-    dataproc_container_image  = var.dataproc_container_image
-    downloader_job_name       = var.downloader_job_name
-    bq_silver_dataset_id      = var.bq_silver_dataset_id
-    bq_obs_dataset_id         = var.bq_obs_dataset_id
-    workflow_name             = "${var.naming_prefix}-daily-pipeline"
+  # All config the workflow needs at runtime — passed as the scheduler argument.
+  scheduler_args = jsonencode({
+    project             = var.project_id
+    region              = var.region
+    bucket              = var.lakehouse_bucket
+    container_image     = var.dataproc_container_image
+    subnet              = var.dataproc_subnet_self_link
+    jobs_prefix         = "gs://${var.lakehouse_bucket}/jobs"
+    downloader_job_name = var.downloader_job_name
   })
 }
 
@@ -36,11 +39,20 @@ resource "google_workflows_workflow" "daily" {
   region          = var.region
   service_account = var.orchestrator_sa_email
   description     = "Daily BZP pipeline: download → bronze → silver → deltas."
-  source_contents = local.daily_workflow_source
+
+  # Placeholder so the resource can be created on first apply.
+  # The real YAML is deployed from workflows/daily.yaml in the lakehouse repo:
+  #   gcloud workflows deploy bzp-daily --source workflows/daily.yaml --location REGION --service-account SA
+  source_contents = "main:\n  steps:\n    - init:\n        return: placeholder"
 
   labels = {
     environment = var.environment
     managed_by  = "terraform"
+  }
+
+  lifecycle {
+    # YAML source is owned by the lakehouse repo — gcloud workflows deploy updates it.
+    ignore_changes = [source_contents]
   }
 }
 
@@ -55,12 +67,10 @@ resource "google_service_account" "scheduler_invoker" {
   description  = "Identity used by Cloud Scheduler to trigger the bzp-daily Cloud Workflows execution."
 }
 
-resource "google_workflows_workflow_iam_member" "scheduler_can_invoke" {
-  project  = var.project_id
-  location = var.region
-  workflow = google_workflows_workflow.daily.name
-  role     = "roles/workflows.invoker"
-  member   = "serviceAccount:${google_service_account.scheduler_invoker.email}"
+resource "google_project_iam_member" "scheduler_invoker_workflows" {
+  project = var.project_id
+  role    = "roles/workflows.invoker"
+  member  = "serviceAccount:${google_service_account.scheduler_invoker.email}"
 }
 
 # --------------------------------------------------------------------------- #
@@ -78,8 +88,7 @@ resource "google_cloud_scheduler_job" "daily" {
   http_target {
     http_method = "POST"
     uri         = "https://workflowexecutions.googleapis.com/v1/${google_workflows_workflow.daily.id}/executions"
-    # Empty argument — workflow defaults target_date to yesterday
-    body        = base64encode(jsonencode({ argument = "{}" }))
+    body        = base64encode(jsonencode({ argument = local.scheduler_args }))
 
     oauth_token {
       service_account_email = google_service_account.scheduler_invoker.email

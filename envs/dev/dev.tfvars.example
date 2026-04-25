@@ -17,8 +17,9 @@ bq_location     = "EU"
 
 dataproc_subnet_cidr = "10.100.0.0/24"
 
-# Set after first docker build & push
-downloader_image_tag     = "latest"
+# Leave empty until after first docker build & push — a public placeholder is used on first apply.
+# After building: set to your git SHA tag, e.g. "abc1234", then run: gcloud run jobs update bzp-downloader --image=...
+downloader_image_tag     = ""
 # dataproc_container_image = "europe-west1-docker.pkg.dev/my-gcp-project-dev/spark/procurement-spark:abc1234"
 
 # Daily pipeline schedule — 03:00 UTC

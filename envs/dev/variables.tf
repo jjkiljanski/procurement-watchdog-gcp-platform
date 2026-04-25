@@ -42,9 +42,9 @@ variable "dataproc_subnet_cidr" {
 }
 
 variable "downloader_image_tag" {
-  description = "Docker image tag for the downloader Cloud Run Job."
+  description = "Docker image tag for the downloader Cloud Run Job. Leave empty before the first image build."
   type        = string
-  default     = "latest"
+  default     = ""
 }
 
 variable "dataproc_container_image" {
