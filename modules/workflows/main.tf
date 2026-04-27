@@ -23,6 +23,7 @@ locals {
     region              = var.region
     bucket              = var.lakehouse_bucket
     subnet              = var.dataproc_subnet_self_link
+    jobs_prefix         = "gs://${var.lakehouse_bucket}/jobs"
     downloader_job_name = var.downloader_job_name
     pipeline_sa         = var.pipeline_sa_email
   })
