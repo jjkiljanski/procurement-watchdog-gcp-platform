@@ -2,12 +2,24 @@
 # Variables — Prod Environment
 ################################################################################
 
+variable "org_id" {
+  description = "GCP organization ID. Used to create the prod project."
+  type        = string
+}
+
+variable "billing_account" {
+  description = "GCP billing account ID to attach to the prod project (format: XXXXXX-XXXXXX-XXXXXX)."
+  type        = string
+}
+
 variable "project_id" {
-  type = string
+  description = "GCP project ID for prod. Must be globally unique."
+  type        = string
 }
 
 variable "region" {
-  type = string
+  description = "GCP region for compute resources."
+  type        = string
 }
 
 variable "environment" {
@@ -35,13 +47,6 @@ variable "dataproc_subnet_cidr" {
   default = "10.100.0.0/24"
 }
 
-
-variable "dataproc_container_image" {
-  description = "Full Artifact Registry URI for the Dataproc Spark container. Required for the pipeline to run."
-  type        = string
-  default     = ""
-}
-
 variable "bq_location" {
   type    = string
   default = "EU"
@@ -66,4 +71,14 @@ variable "schedule_cron" {
 variable "time_zone" {
   type    = string
   default = "Europe/Warsaw"
+}
+
+variable "github_repo" {
+  description = "GitHub repository (owner/name) allowed to impersonate the CI SA via WIF."
+  type        = string
+}
+
+variable "backfill_start_date" {
+  description = "First date (YYYY-MM-DD, inclusive) of the CI-triggered backfill on release tags."
+  type        = string
 }

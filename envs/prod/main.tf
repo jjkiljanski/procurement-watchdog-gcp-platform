@@ -1,8 +1,11 @@
 ################################################################################
 # Main Composition — Prod Environment
 #
-# Identical module structure to dev. Differences: force_destroy=false on
-# storage, larger downloader container, pinned image tags.
+# Identical module structure to dev. Key differences:
+#   - Creates the GCP project (dev project is assumed to pre-exist)
+#   - force_destroy = false on storage
+#   - Larger Cloud Run job limits
+#   - Separate WIF pool + CI SA (distinct from dev)
 ################################################################################
 
 terraform {
@@ -17,8 +20,29 @@ terraform {
 }
 
 provider "google" {
-  project = var.project_id
-  region  = var.region
+  region = var.region
+  # No default project — google_project resource manages project creation.
+  # All module resources set project = var.project_id explicitly.
+}
+
+# --------------------------------------------------------------------------- #
+# Project — create the prod GCP project within the org
+#
+# First apply: the user must have roles/resourcemanager.projectCreator in the org.
+# If the project already exists, import it first:
+#   terraform import google_project.prod PROJECT_ID
+# --------------------------------------------------------------------------- #
+
+resource "google_project" "prod" {
+  name            = "Procurement Watchdog Prod"
+  project_id      = var.project_id
+  org_id          = var.org_id
+  billing_account = var.billing_account
+
+  labels = {
+    environment = "prod"
+    managed_by  = "terraform"
+  }
 }
 
 # --------------------------------------------------------------------------- #
@@ -29,6 +53,8 @@ locals {
   required_apis = [
     "storage.googleapis.com",
     "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "sts.googleapis.com",
     "dataproc.googleapis.com",
     "run.googleapis.com",
     "artifactregistry.googleapis.com",
@@ -47,10 +73,12 @@ resource "google_project_service" "apis" {
   project            = var.project_id
   service            = each.value
   disable_on_destroy = false
+
+  depends_on = [google_project.prod]
 }
 
 # --------------------------------------------------------------------------- #
-# Storage — single unified lakehouse bucket
+# Storage
 # --------------------------------------------------------------------------- #
 
 module "storage" {
@@ -61,11 +89,11 @@ module "storage" {
   bucket_location = var.bucket_location
   force_destroy   = false
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis["storage.googleapis.com"]]
 }
 
 # --------------------------------------------------------------------------- #
-# Network — subnet with Private Google Access for Dataproc Serverless
+# Network
 # --------------------------------------------------------------------------- #
 
 module "network" {
@@ -77,11 +105,11 @@ module "network" {
   network_name  = var.network_name
   subnet_cidr   = var.dataproc_subnet_cidr
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis["compute.googleapis.com"]]
 }
 
 # --------------------------------------------------------------------------- #
-# Artifact Registry — Docker repository for Spark + downloader images
+# Artifact Registry
 # --------------------------------------------------------------------------- #
 
 module "artifact_registry" {
@@ -91,11 +119,11 @@ module "artifact_registry" {
   region      = var.region
   environment = var.environment
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis["artifactregistry.googleapis.com"]]
 }
 
 # --------------------------------------------------------------------------- #
-# IAM — service accounts and bindings
+# IAM
 # --------------------------------------------------------------------------- #
 
 module "iam" {
@@ -115,20 +143,20 @@ module "iam" {
 module "downloader" {
   source = "../../modules/cloud_run_downloader"
 
-  project_id            = var.project_id
-  region                = var.region
-  environment           = var.environment
-  downloader_sa_email   = module.iam.downloader_sa_email
-  lakehouse_bucket      = module.storage.bucket_name
-  bq_obs_dataset_id     = var.bq_obs_dataset_id
-  cpu_limit             = "2"
-  memory_limit          = "2Gi"
+  project_id          = var.project_id
+  region              = var.region
+  environment         = var.environment
+  downloader_sa_email = module.iam.downloader_sa_email
+  lakehouse_bucket    = module.storage.bucket_name
+  bq_obs_dataset_id   = var.bq_obs_dataset_id
+  cpu_limit           = "2"
+  memory_limit        = "2Gi"
 
   depends_on = [module.iam, module.artifact_registry]
 }
 
 # --------------------------------------------------------------------------- #
-# BigQuery — procurement_silver and procurement_obs datasets
+# BigQuery
 # --------------------------------------------------------------------------- #
 
 module "bigquery" {
@@ -145,7 +173,7 @@ module "bigquery" {
 }
 
 # --------------------------------------------------------------------------- #
-# Workflows — daily pipeline + Cloud Scheduler trigger
+# Workflows
 # --------------------------------------------------------------------------- #
 
 module "workflows" {
@@ -159,7 +187,6 @@ module "workflows" {
   lakehouse_bucket          = module.storage.bucket_name
   pipeline_sa_email         = module.iam.pipeline_sa_email
   dataproc_subnet_self_link = module.network.dataproc_subnet_self_link
-  dataproc_container_image  = var.dataproc_container_image
   downloader_job_name       = module.downloader.job_name
   bq_silver_dataset_id      = var.bq_silver_dataset_id
   bq_obs_dataset_id         = var.bq_obs_dataset_id
@@ -167,6 +194,28 @@ module "workflows" {
   time_zone                 = var.time_zone
 
   depends_on = [module.iam, module.network, module.storage, module.downloader]
+}
+
+# --------------------------------------------------------------------------- #
+# WIF — keyless auth for GitHub Actions
+# --------------------------------------------------------------------------- #
+
+module "wif" {
+  source = "../../modules/wif"
+
+  project_id         = var.project_id
+  naming_prefix      = var.naming_prefix
+  github_repo        = var.github_repo
+  lakehouse_bucket   = module.storage.bucket_name
+  orchestrator_sa_id = module.iam.orchestrator_sa_id
+
+  depends_on = [
+    google_project_service.apis["iam.googleapis.com"],
+    google_project_service.apis["iamcredentials.googleapis.com"],
+    google_project_service.apis["sts.googleapis.com"],
+    module.iam,
+    module.storage,
+  ]
 }
 
 # --------------------------------------------------------------------------- #
@@ -214,4 +263,19 @@ output "bq_datasets" {
 
 output "workflow_name" {
   value = module.workflows.workflow_name
+}
+
+output "wif_provider" {
+  description = "WIF provider resource name — set as PROD_WIF_PROVIDER GitHub secret."
+  value       = module.wif.wif_provider
+}
+
+output "ci_service_account" {
+  description = "CI SA email — set as PROD_CI_SERVICE_ACCOUNT GitHub secret."
+  value       = module.wif.ci_service_account_email
+}
+
+output "backfill_start_date" {
+  description = "Earliest date included in CI-triggered backfills (YYYY-MM-DD)."
+  value       = var.backfill_start_date
 }

@@ -1,14 +1,28 @@
 # =============================================================================
 # Prod Environment — Example Variables
 #
-# cp prod.tfvars.example prod.tfvars
-# terraform init -backend-config="bucket=YOUR-TFSTATE-BUCKET"
-# terraform plan  -var-file=prod.tfvars
-# terraform apply -var-file=prod.tfvars
+# 1. Copy and fill in real values:
+#      cp prod.tfvars.example prod.tfvars
+#
+# 2. Create the TF state bucket manually (once):
+#      gsutil mb -l EU gs://procwatch-tfstate-prod
+#      gsutil versioning set on gs://procwatch-tfstate-prod
+#
+# 3. Init and apply:
+#      terraform init -backend-config="bucket=procwatch-tfstate-prod"
+#      terraform plan  -var-file=prod.tfvars
+#      terraform apply -var-file=prod.tfvars
+#
+# 4. After apply, copy the two WIF outputs to GitHub repo secrets:
+#      PROD_WIF_PROVIDER        ← terraform output wif_provider
+#      PROD_CI_SERVICE_ACCOUNT  ← terraform output ci_service_account
 # =============================================================================
 
-project_id    = "my-gcp-project-prod"
-region        = "europe-west1"
+org_id          = "REPLACE_WITH_ORG_ID"        # gcloud organizations list
+billing_account = "REPLACE_WITH_BILLING_ID"    # gcloud billing accounts list
+
+project_id    = "procwatch-prod"
+region        = "europe-central2"
 environment   = "prod"
 naming_prefix = "procwatch"
 
@@ -17,10 +31,9 @@ bq_location     = "EU"
 
 dataproc_subnet_cidr = "10.100.0.0/24"
 
-# Pin to a specific release tag in prod
-downloader_image_tag     = "v1.0.0"
-dataproc_container_image = "europe-west1-docker.pkg.dev/my-gcp-project-prod/spark/procurement-spark:v1.0.0"
-
 # Daily pipeline schedule — 03:00 UTC
 schedule_cron = "0 3 * * *"
 time_zone     = "Europe/Warsaw"
+
+github_repo         = "jjkiljanski/procurement-watchdog-lakehouse"
+backfill_start_date = "2023-01-01"

@@ -26,6 +26,8 @@ locals {
   required_apis = [
     "storage.googleapis.com",
     "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "sts.googleapis.com",
     "dataproc.googleapis.com",
     "run.googleapis.com",
     "artifactregistry.googleapis.com",
@@ -58,7 +60,7 @@ module "storage" {
   bucket_location = var.bucket_location
   force_destroy   = true
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis["storage.googleapis.com"]]
 }
 
 # --------------------------------------------------------------------------- #
@@ -74,7 +76,7 @@ module "network" {
   network_name  = var.network_name
   subnet_cidr   = var.dataproc_subnet_cidr
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis["compute.googleapis.com"]]
 }
 
 # --------------------------------------------------------------------------- #
@@ -88,7 +90,7 @@ module "artifact_registry" {
   region      = var.region
   environment = var.environment
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis["artifactregistry.googleapis.com"]]
 }
 
 # --------------------------------------------------------------------------- #
@@ -218,4 +220,41 @@ output "bq_datasets" {
 output "workflow_name" {
   description = "Cloud Workflows daily pipeline name."
   value       = module.workflows.workflow_name
+}
+
+# --------------------------------------------------------------------------- #
+# WIF — keyless auth for GitHub Actions
+# --------------------------------------------------------------------------- #
+
+module "wif" {
+  source = "../../modules/wif"
+
+  project_id         = var.project_id
+  naming_prefix      = var.naming_prefix
+  github_repo        = var.github_repo
+  lakehouse_bucket   = module.storage.bucket_name
+  orchestrator_sa_id = module.iam.orchestrator_sa_id
+
+  depends_on = [
+    google_project_service.apis["iam.googleapis.com"],
+    google_project_service.apis["iamcredentials.googleapis.com"],
+    google_project_service.apis["sts.googleapis.com"],
+    module.iam,
+    module.storage,
+  ]
+}
+
+output "wif_provider" {
+  description = "WIF provider resource name — set as DEV_WIF_PROVIDER GitHub secret."
+  value       = module.wif.wif_provider
+}
+
+output "ci_service_account" {
+  description = "CI SA email — set as DEV_CI_SERVICE_ACCOUNT GitHub secret."
+  value       = module.wif.ci_service_account_email
+}
+
+output "backfill_start_date" {
+  description = "Earliest date included in CI-triggered backfills (YYYY-MM-DD)."
+  value       = var.backfill_start_date
 }

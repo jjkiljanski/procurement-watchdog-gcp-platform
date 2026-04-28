@@ -18,14 +18,18 @@
 
 locals {
   # All config the workflow needs at runtime — passed as the scheduler argument.
+  # container_image is set to a placeholder here; CI updates it after every image push
+  # via `gcloud scheduler jobs update http` (see lifecycle.ignore_changes below).
   scheduler_args = jsonencode({
     project             = var.project_id
     region              = var.region
     bucket              = var.lakehouse_bucket
+    container_image     = "placeholder"
     subnet              = var.dataproc_subnet_self_link
     jobs_prefix         = "gs://${var.lakehouse_bucket}/jobs"
     downloader_job_name = var.downloader_job_name
     pipeline_sa         = var.pipeline_sa_email
+    bq_obs_dataset      = var.bq_obs_dataset_id
   })
 }
 
@@ -99,5 +103,11 @@ resource "google_cloud_scheduler_job" "daily" {
     retry_count          = 1
     min_backoff_duration = "30s"
     max_backoff_duration = "120s"
+  }
+
+  lifecycle {
+    # CI owns the message body (updates container_image after every push).
+    # Terraform manages name, schedule, and timezone only.
+    ignore_changes = [http_target]
   }
 }

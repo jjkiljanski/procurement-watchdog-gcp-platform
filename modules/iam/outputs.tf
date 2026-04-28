@@ -12,3 +12,8 @@ output "orchestrator_sa_email" {
   description = "Workflow orchestrator (Cloud Workflows) service account email."
   value       = google_service_account.orchestrator.email
 }
+
+output "orchestrator_sa_id" {
+  description = "Full resource ID of the orchestrator SA (projects/…/serviceAccounts/…)."
+  value       = google_service_account.orchestrator.name
+}

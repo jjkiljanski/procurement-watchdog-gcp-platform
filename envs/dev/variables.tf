@@ -70,3 +70,13 @@ variable "time_zone" {
   type        = string
   default     = "Europe/Warsaw"
 }
+
+variable "github_repo" {
+  description = "GitHub repository (owner/name) allowed to impersonate the CI SA via WIF."
+  type        = string
+}
+
+variable "backfill_start_date" {
+  description = "First date (YYYY-MM-DD, inclusive) of the CI-triggered backfill on release tags."
+  type        = string
+}
