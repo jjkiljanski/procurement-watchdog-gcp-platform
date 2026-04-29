@@ -53,6 +53,7 @@ resource "google_project" "prod" {
 
 locals {
   required_apis = [
+    "cloudresourcemanager.googleapis.com",  # must be pre-enabled manually — used by Terraform to enable all other APIs
     "storage.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",

@@ -144,7 +144,15 @@ After `terraform apply`, copy the two outputs to GitHub repository secrets (Sett
 - A GCP project with billing enabled
 - A GCS bucket for Terraform state (created manually)
 
-### 1. Create Terraform State Bucket
+### 1. Bootstrap the Cloud Resource Manager API
+
+Terraform uses this API to enable all other APIs, but it must be enabled manually first (one-time):
+
+```bash
+gcloud services enable cloudresourcemanager.googleapis.com --project=YOUR_PROJECT_ID
+```
+
+### 2. Create Terraform State Bucket
 
 ```bash
 export PROJECT_ID="your-project-id"
@@ -154,7 +162,7 @@ gsutil mb -p $PROJECT_ID -l EU gs://$TF_STATE_BUCKET
 gsutil versioning set on gs://$TF_STATE_BUCKET
 ```
 
-### 2. Configure Variables
+### 3. Configure Variables
 
 ```bash
 cd envs/dev
@@ -162,7 +170,7 @@ cp dev.tfvars.example dev.tfvars
 # Edit dev.tfvars — set at minimum: project_id, region, github_repo
 ```
 
-### 3. Initialize and Apply
+### 4. Initialize and Apply
 
 ```bash
 terraform init -backend-config="bucket=$TF_STATE_BUCKET"
@@ -181,11 +189,11 @@ Key outputs after apply:
 | `wif_provider` | Copy to `DEV_WIF_PROVIDER` GitHub secret |
 | `ci_service_account` | Copy to `DEV_CI_SERVICE_ACCOUNT` GitHub secret |
 
-### 4. Add GitHub Secrets
+### 5. Add GitHub Secrets
 
 Copy `wif_provider` and `ci_service_account` from the Terraform outputs into the GitHub repository secrets for the lakehouse repo (see table in [CI/CD](#cicd) section above).
 
-### 5. Push to Main
+### 6. Push to Main
 
 From the lakehouse repo, push a commit to `main`. The CI/CD pipeline will automatically:
 - Build and push the Spark and downloader Docker images
