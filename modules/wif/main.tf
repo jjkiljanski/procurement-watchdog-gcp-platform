@@ -6,14 +6,48 @@
 #   - CI service account with all permissions needed by the deploy pipeline
 #   - IAM binding: GitHub Actions jobs from var.github_repo can impersonate the CI SA
 #
-# The CI SA permissions cover:
-#   - Artifact Registry: push images
-#   - GCS: upload pipeline scripts to lakehouse bucket
-#   - Cloud Run: update downloader job image
-#   - Cloud Workflows: deploy workflow YAML, invoke executions (backfill)
-#   - Cloud Scheduler: update scheduler message body (new container image)
-#   - BigQuery: create/update external table definitions
-#   - IAM: act as orchestrator SA when deploying workflows
+# Permission inventory (why each role is required)
+# ------------------------------------------------
+# roles/artifactregistry.writer
+#   `docker push` to the Artifact Registry repos for the Spark and downloader images.
+#
+# roles/run.developer
+#   `gcloud run jobs update` to swap the container image on the bzp-downloader Cloud Run job.
+#
+# roles/workflows.editor
+#   `gcloud workflows deploy` to upload updated bzp-daily and bzp-backfill YAML definitions.
+#
+# roles/workflows.invoker
+#   `gcloud workflows run` to trigger the bzp-backfill execution on release tags.
+#
+# roles/cloudscheduler.admin
+#   `gcloud scheduler jobs update http` to refresh the message body (container_image field)
+#   in the bzp-daily-trigger scheduler job after each image push.
+#
+# roles/bigquery.dataEditor
+#   `setup_bq_external_tables.py` creates/replaces external Iceberg table definitions
+#   in the procurement_silver and procurement_obs datasets.
+#
+# roles/bigquery.jobUser
+#   Required alongside dataEditor to actually run the BigQuery jobs that the setup
+#   script submits (GCP splits table-level access from job-submission access).
+#
+# roles/storage.objectAdmin (bucket-level)
+#   `gsutil cp scripts/pipeline/*.py gs://{bucket}/jobs/` uploads the pipeline scripts
+#   that Dataproc Serverless reads at batch submission time.
+#
+# roles/iam.serviceAccountUser on orchestrator SA
+#   `gcloud workflows deploy --service-account=orchestrator_sa` — GCP requires the
+#   caller to be able to actAs any SA it assigns to a resource it is creating/updating.
+#
+# roles/iam.serviceAccountUser on downloader SA
+#   `gcloud run jobs update` on bzp-downloader — even without an explicit
+#   --service-account flag, GCP validates the caller can actAs the SA already
+#   attached to the Cloud Run job.
+#
+# roles/iam.serviceAccountUser on scheduler invoker SA
+#   `gcloud scheduler jobs update http` on bzp-daily-trigger — same rule as above:
+#   GCP validates the caller can actAs the SA already attached to the scheduler job.
 ################################################################################
 
 resource "google_iam_workload_identity_pool" "github" {
@@ -62,6 +96,7 @@ resource "google_service_account_iam_member" "wif_impersonation" {
 
 # --------------------------------------------------------------------------- #
 # Project-Level IAM for CI SA
+# (see permission inventory in the module header for the "why" of each role)
 # --------------------------------------------------------------------------- #
 
 resource "google_project_iam_member" "ci_ar_writer" {
@@ -107,7 +142,7 @@ resource "google_project_iam_member" "ci_bq_job_user" {
 }
 
 # --------------------------------------------------------------------------- #
-# Bucket-Level IAM — upload pipeline scripts
+# Bucket-Level IAM
 # --------------------------------------------------------------------------- #
 
 resource "google_storage_bucket_iam_member" "ci_scripts_writer" {
@@ -117,8 +152,10 @@ resource "google_storage_bucket_iam_member" "ci_scripts_writer" {
 }
 
 # --------------------------------------------------------------------------- #
-# SA-Level IAM — CI acts as orchestrator SA when deploying Cloud Workflows
-# (gcloud workflows deploy --service-account=orchestrator_sa requires this)
+# SA-Level IAM (actAs bindings)
+# GCP requires iam.serviceaccounts.actAs whenever a gcloud command assigns or
+# inherits a service account on a resource — even when no --service-account
+# flag is passed explicitly (the SA already attached to the resource is checked).
 # --------------------------------------------------------------------------- #
 
 resource "google_service_account_iam_member" "ci_acts_as_orchestrator" {
@@ -127,14 +164,12 @@ resource "google_service_account_iam_member" "ci_acts_as_orchestrator" {
   member             = "serviceAccount:${google_service_account.ci.email}"
 }
 
-# `gcloud run jobs update` requires actAs on the job's runtime SA.
 resource "google_service_account_iam_member" "ci_acts_as_downloader" {
   service_account_id = var.downloader_sa_id
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.ci.email}"
 }
 
-# `gcloud scheduler jobs update http` requires actAs on the scheduler's invoker SA.
 resource "google_service_account_iam_member" "ci_acts_as_scheduler_invoker" {
   service_account_id = var.scheduler_invoker_sa_id
   role               = "roles/iam.serviceAccountUser"
