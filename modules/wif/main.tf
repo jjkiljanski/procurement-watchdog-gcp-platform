@@ -126,3 +126,10 @@ resource "google_service_account_iam_member" "ci_acts_as_orchestrator" {
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.ci.email}"
 }
+
+# `gcloud run jobs update` requires actAs on the job's runtime SA.
+resource "google_service_account_iam_member" "ci_acts_as_downloader" {
+  service_account_id = var.downloader_sa_id
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.ci.email}"
+}
