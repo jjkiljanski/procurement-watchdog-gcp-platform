@@ -82,3 +82,14 @@ variable "backfill_start_date" {
   description = "First date (YYYY-MM-DD, inclusive) of the CI-triggered backfill on release tags."
   type        = string
 }
+
+variable "alert_email" {
+  description = "Email address for pipeline failure and budget alerts."
+  type        = string
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly spend cap in USD. Alerts fire at 80% and 100%."
+  type        = number
+  default     = 50
+}

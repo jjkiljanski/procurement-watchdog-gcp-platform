@@ -37,6 +37,8 @@ locals {
     "workflows.googleapis.com",
     "workflowexecutions.googleapis.com",
     "cloudscheduler.googleapis.com",
+    "monitoring.googleapis.com",
+    "billingbudgets.googleapis.com",
   ]
 }
 
@@ -163,6 +165,25 @@ module "workflows" {
   time_zone                 = var.time_zone
 
   depends_on = [module.iam, module.network, module.storage, module.downloader]
+}
+
+# --------------------------------------------------------------------------- #
+# Alerting — workflow failure email + billing budget
+# --------------------------------------------------------------------------- #
+
+module "alerting" {
+  source = "../../modules/alerting"
+
+  project_id         = var.project_id
+  environment        = var.environment
+  billing_account    = var.billing_account
+  alert_email        = var.alert_email
+  monthly_budget_usd = var.monthly_budget_usd
+
+  depends_on = [
+    google_project_service.apis["monitoring.googleapis.com"],
+    google_project_service.apis["billingbudgets.googleapis.com"],
+  ]
 }
 
 # --------------------------------------------------------------------------- #
