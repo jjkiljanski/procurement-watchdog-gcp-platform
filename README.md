@@ -65,10 +65,11 @@ procurement-watchdog-gcp-platform/
 │   ├── storage/                  # Single lakehouse GCS bucket
 │   ├── network/                  # Dataproc Serverless subnet (PGA)
 │   ├── iam/                      # Service accounts + IAM bindings
-│   ├── artifact_registry/        # Docker registry (spark repo)
+│   ├── artifact_registry/        # Docker registry (spark + downloader repos)
 │   ├── cloud_run_downloader/     # bzp-downloader Cloud Run Job
 │   ├── bigquery/                 # procurement_silver + procurement_obs datasets
-│   └── workflows/                # Cloud Workflows (bzp-daily) + Cloud Scheduler
+│   ├── workflows/                # Cloud Workflows (bzp-daily) + Cloud Scheduler
+│   └── wif/                      # Workload Identity Federation + CI service account
 ├── envs/
 │   ├── dev/                      # Dev environment config
 │   │   ├── backend.tf
@@ -98,6 +99,36 @@ procurement-watchdog-gcp-platform/
 | **BigQuery datasets** | `procurement_silver`, `procurement_obs` | `bigquery` |
 | **Cloud Workflows** | `bzp-daily` — orchestrates the 4-step daily pipeline | `workflows` |
 | **Cloud Scheduler** | `bzp-daily-trigger` — fires `bzp-daily` at 03:00 UTC | `workflows` |
+| **Workload Identity Pool** | Keyless GitHub Actions auth (no SA key JSON) | `wif` |
+| **CI Service Account** | Used by GitHub Actions to deploy images, scripts, workflows | `wif` |
+
+---
+
+## CI/CD
+
+Container images, pipeline scripts, Cloud Workflows YAMLs, BigQuery table definitions, and Cloud Scheduler payloads are all managed by the GitHub Actions pipeline in the lakehouse repo — **not** by Terraform. Terraform owns the long-lived infrastructure; CI/CD owns every deployment-time artifact.
+
+### How keyless auth works (Workload Identity Federation)
+
+GitHub Actions generates a short-lived OIDC token for each run. GCP exchanges it for a temporary access token via the WIF pool, which is scoped to the specific GitHub repository. No service account key JSON is stored anywhere.
+
+### GitHub Secrets required
+
+After `terraform apply`, copy the two outputs to GitHub repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret name | Terraform output |
+|-------------|-----------------|
+| `DEV_WIF_PROVIDER` | `wif_provider` (in `envs/dev`) |
+| `DEV_CI_SERVICE_ACCOUNT` | `ci_service_account` (in `envs/dev`) |
+| `PROD_WIF_PROVIDER` | `wif_provider` (in `envs/prod`) |
+| `PROD_CI_SERVICE_ACCOUNT` | `ci_service_account` (in `envs/prod`) |
+
+### CI/CD triggers
+
+| Event | Action |
+|-------|--------|
+| Push to `main` | Lint + test + deploy to dev (no backfill) |
+| Push of `v*` tag | Lint + test + deploy to dev (with backfill) + deploy to prod (with backfill) |
 
 ---
 
@@ -125,7 +156,7 @@ gsutil versioning set on gs://$TF_STATE_BUCKET
 ```bash
 cd envs/dev
 cp dev.tfvars.example dev.tfvars
-# Edit dev.tfvars — set project_id and region at minimum
+# Edit dev.tfvars — set at minimum: project_id, region, github_repo
 ```
 
 ### 3. Initialize and Apply
@@ -137,100 +168,60 @@ terraform apply -var-file=dev.tfvars
 ```
 
 Key outputs after apply:
-- `lakehouse_bucket` — `gs://{project_id}-lakehouse`
-- `artifact_registry_url` — base URL for Docker images
-- `spark_image_base` — base URI for the Spark container (append `:<tag>`)
-- `downloader_image_base` — base URI for the downloader container (append `:<tag>`)
-- `dataproc_subnet` — self-link to pass as `DATAPROC_SUBNET`
-- `workflow_name` — `bzp-daily`
 
-### 4. Build and Push Container Images
+| Output | Description |
+|--------|-------------|
+| `lakehouse_bucket` | `gs://{project_id}-lakehouse` |
+| `artifact_registry_url` | Base URL for Docker images |
+| `dataproc_subnet` | Self-link to pass as `DATAPROC_SUBNET` |
+| `workflow_name` | `bzp-daily` |
+| `wif_provider` | Copy to `DEV_WIF_PROVIDER` GitHub secret |
+| `ci_service_account` | Copy to `DEV_CI_SERVICE_ACCOUNT` GitHub secret |
 
-From the `procurement-watchdog-lakehouse` repository:
+### 4. Add GitHub Secrets
 
-```bash
-GIT_SHA=$(git rev-parse --short HEAD)
-REGION="europe-west1"
-PROJECT_ID="your-project-id"
+Copy `wif_provider` and `ci_service_account` from the Terraform outputs into the GitHub repository secrets for the lakehouse repo (see table in [CI/CD](#cicd) section above).
 
-# Authenticate Docker to Artifact Registry
-gcloud auth configure-docker ${REGION}-docker.pkg.dev
+### 5. Push to Main
 
-# Spark container (Dataproc Serverless batches)
-SPARK_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/spark/procurement-spark:${GIT_SHA}"
-docker build -f Dockerfile.spark --build-arg GIT_SHA=${GIT_SHA} -t ${SPARK_IMAGE} .
-docker push ${SPARK_IMAGE}
-
-# Downloader container (Cloud Run Job)
-DL_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/spark/procurement-downloader:${GIT_SHA}"
-docker build -f Dockerfile.downloader --build-arg GIT_SHA=${GIT_SHA} -t ${DL_IMAGE} .
-docker push ${DL_IMAGE}
-```
-
-Set `dataproc_container_image = "${SPARK_IMAGE}"` in your tfvars and re-run `terraform apply`.
-
-### 5. Upload Pipeline Scripts to GCS
-
-```bash
-export LAKEHOUSE_BUCKET="${PROJECT_ID}-lakehouse"
-gsutil -m cp scripts/pipeline/*.py gs://${LAKEHOUSE_BUCKET}/jobs/
-```
-
-### 6. Create BigQuery External Iceberg Tables
-
-After the first pipeline run populates the silver layer:
-
-```bash
-export RUNTIME_ENV=gcp
-export LAKEHOUSE_BUCKET="${PROJECT_ID}-lakehouse"
-export GCP_PROJECT="${PROJECT_ID}"
-export BQ_DATASET=procurement_silver
-
-cd procurement-watchdog-lakehouse
-python scripts/ops/setup_bq_external_tables.py --format iceberg
-```
-
-Re-run this script when new notice types are added or the silver schema changes.
-
-### Trigger a Manual Run
-
-```bash
-gcloud workflows run bzp-daily \
-  --location=europe-west1 \
-  --data='{"target_date":"2025-03-15"}'
-```
+From the lakehouse repo, push a commit to `main`. The CI/CD pipeline will automatically:
+- Build and push the Spark and downloader Docker images
+- Upload pipeline scripts to GCS
+- Deploy Cloud Workflows YAMLs
+- Update the Cloud Run job image and Cloud Scheduler payload
+- Run BQ external table setup
 
 ---
 
 ## Configuration Variables
 
-| Variable | Description | Dev Default | Prod Default |
-|----------|-------------|-------------|--------------|
-| `project_id` | GCP project ID | (required) | (required) |
-| `region` | GCP region | (required) | (required) |
-| `environment` | Environment label | `dev` | `prod` |
-| `naming_prefix` | Resource name prefix | `procwatch` | `procwatch` |
-| `bucket_location` | GCS + BQ location | `EU` | `EU` |
-| `dataproc_subnet_cidr` | Dataproc subnet CIDR | `10.100.0.0/24` | `10.100.0.0/24` |
-| `downloader_image_tag` | Downloader image tag | `latest` | (required) |
-| `dataproc_container_image` | Spark image full URI | `""` (set after first build) | (required) |
-| `bq_silver_dataset_id` | Silver BQ dataset | `procurement_silver` | same |
-| `bq_obs_dataset_id` | Observability BQ dataset | `procurement_obs` | same |
-| `schedule_cron` | Pipeline cron schedule (UTC) | `0 3 * * *` | same |
-| `time_zone` | Scheduler UI timezone | `Europe/Warsaw` | same |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `project_id` | GCP project ID | (required) |
+| `region` | GCP region | (required) |
+| `github_repo` | GitHub repo in `owner/name` format for WIF | (required) |
+| `backfill_start_date` | Earliest date for backfill runs (`YYYY-MM-DD`) | (required) |
+| `environment` | Environment label | `dev` |
+| `naming_prefix` | Resource name prefix | `procwatch` |
+| `bucket_location` | GCS + BQ location | `EU` |
+| `dataproc_subnet_cidr` | Dataproc Serverless subnet CIDR | `10.100.0.0/24` |
+| `bq_silver_dataset_id` | Silver BQ dataset name | `procurement_silver` |
+| `bq_obs_dataset_id` | Observability BQ dataset name | `procurement_obs` |
+| `schedule_cron` | Daily pipeline cron schedule (UTC) | `0 3 * * *` |
+| `time_zone` | Scheduler timezone | `Europe/Warsaw` |
 
 ---
 
 ## IAM Design
 
-Three service accounts with least-privilege access:
+Four service accounts with least-privilege access:
 
 | SA | Used by | Key permissions |
 |----|---------|-----------------|
 | `procwatch-downloader` | Cloud Run Job | `storage.objectAdmin` on lakehouse bucket |
-| `procwatch-pipeline` | Dataproc Serverless batches | `storage.objectAdmin` on lakehouse bucket, `dataproc.worker`, `bigquery.dataEditor` on both BQ datasets |
-| `procwatch-orchestrator` | Cloud Workflows | `run.developer` (submit Cloud Run Job executions), `dataproc.editor` (submit batches), `logging.logWriter` (sys.log calls), `iam.serviceAccountUser` on pipeline SA |
-| `procwatch-sched-invoke` | Cloud Scheduler | `workflows.invoker` on the `bzp-daily` workflow |
+| `procwatch-pipeline` | Dataproc Serverless batches | `storage.objectAdmin` on lakehouse bucket, `dataproc.worker`, `bigquery.dataEditor` |
+| `procwatch-orchestrator` | Cloud Workflows | `run.developer`, `dataproc.editor`, `iam.serviceAccountUser` on pipeline SA |
+| `procwatch-ci` | GitHub Actions (via WIF) | `artifactregistry.writer`, `run.developer`, `workflows.editor`, `workflows.invoker`, `cloudscheduler.admin`, `bigquery.dataEditor`, `storage.objectAdmin` on bucket, `iam.serviceAccountUser` on orchestrator and downloader SAs |
 
 ---
 
@@ -243,17 +234,18 @@ Three service accounts with least-privilege access:
 | **Cloud Workflows** | Per step executed (~$0.01/execution). Negligible. |
 | **GCS** | Storage volume. Single bucket with folder prefixes keeps costs low. |
 | **BigQuery** | Bytes scanned per query (external tables — no storage cost for silver data). |
-| **Artifact Registry** | Storage for container images. |
+| **Artifact Registry** | Storage for container images. Only the latest image is retained per repo. |
 
 ---
 
 ## Security
 
-- **No secrets in Terraform.** Authentication via GCP service accounts and Workload Identity.
+- **No secrets in Terraform or CI.** GitHub Actions authenticates via Workload Identity Federation — no SA key JSON stored anywhere.
 - **Least-privilege IAM.** Each service account has exactly the permissions it needs — no project-wide Editor/Owner.
-- **Bucket-level IAM.** Downloader, pipeline, and orchestrator SAs each get `objectAdmin` on the single lakehouse bucket.
+- **WIF scoped to repository.** The identity pool only accepts tokens from the configured GitHub repository.
+- **Bucket-level IAM.** Downloader, pipeline, and CI SAs each get `objectAdmin` on the single lakehouse bucket; no broader storage access.
 - **Private Google Access.** Dataproc Serverless workers use a dedicated subnet with PGA — no public IPs needed.
-- **No hardcoded project IDs.** All resource names are parameterized via variables.
+- **No hardcoded project IDs.** All resource names are parameterised via variables.
 
 ---
 
