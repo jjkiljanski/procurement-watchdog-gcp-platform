@@ -27,3 +27,8 @@ variable "downloader_sa_id" {
   description = "Full resource ID of the downloader SA — CI SA needs serviceAccountUser on it to update the Cloud Run job."
   type        = string
 }
+
+variable "scheduler_invoker_sa_id" {
+  description = "Full resource ID of the scheduler invoker SA — CI SA needs serviceAccountUser on it to update the Cloud Scheduler job."
+  type        = string
+}

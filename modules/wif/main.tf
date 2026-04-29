@@ -133,3 +133,10 @@ resource "google_service_account_iam_member" "ci_acts_as_downloader" {
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.ci.email}"
 }
+
+# `gcloud scheduler jobs update http` requires actAs on the scheduler's invoker SA.
+resource "google_service_account_iam_member" "ci_acts_as_scheduler_invoker" {
+  service_account_id = var.scheduler_invoker_sa_id
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.ci.email}"
+}

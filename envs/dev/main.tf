@@ -234,7 +234,8 @@ module "wif" {
   github_repo        = var.github_repo
   lakehouse_bucket   = module.storage.bucket_name
   orchestrator_sa_id = module.iam.orchestrator_sa_id
-  downloader_sa_id   = module.iam.downloader_sa_id
+  downloader_sa_id        = module.iam.downloader_sa_id
+  scheduler_invoker_sa_id = module.workflows.scheduler_invoker_sa_id
 
   depends_on = [
     google_project_service.apis["iam.googleapis.com"],
@@ -242,6 +243,7 @@ module "wif" {
     google_project_service.apis["sts.googleapis.com"],
     module.iam,
     module.storage,
+    module.workflows,
   ]
 }
 
