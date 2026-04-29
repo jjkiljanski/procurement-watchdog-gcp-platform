@@ -69,7 +69,8 @@ procurement-watchdog-gcp-platform/
 │   ├── cloud_run_downloader/     # bzp-downloader Cloud Run Job
 │   ├── bigquery/                 # procurement_silver + procurement_obs datasets
 │   ├── workflows/                # Cloud Workflows (bzp-daily) + Cloud Scheduler
-│   └── wif/                      # Workload Identity Federation + CI service account
+│   ├── wif/                      # Workload Identity Federation + CI service account
+│   └── alerting/                 # Email notification channel + workflow failure alert + billing budget
 ├── envs/
 │   ├── dev/                      # Dev environment config
 │   │   ├── backend.tf
@@ -101,6 +102,8 @@ procurement-watchdog-gcp-platform/
 | **Cloud Scheduler** | `bzp-daily-trigger` — fires `bzp-daily` at 03:00 UTC | `workflows` |
 | **Workload Identity Pool** | Keyless GitHub Actions auth (no SA key JSON) | `wif` |
 | **CI Service Account** | Used by GitHub Actions to deploy images, scripts, workflows | `wif` |
+| **Cloud Monitoring alert** | Email on `bzp-daily` workflow execution failure | `alerting` |
+| **Billing budget** | Email at 80% and 100% of monthly spend cap | `alerting` |
 
 ---
 
@@ -209,6 +212,9 @@ From the lakehouse repo, push a commit to `main`. The CI/CD pipeline will automa
 | `bq_obs_dataset_id` | Observability BQ dataset name | `procurement_obs` |
 | `schedule_cron` | Daily pipeline cron schedule (UTC) | `0 3 * * *` |
 | `time_zone` | Scheduler timezone | `Europe/Warsaw` |
+| `alert_email` | Recipient for pipeline failure and budget alerts | (required) |
+| `billing_account` | Billing account ID for budget (dev only; prod infers from project) | (required in dev) |
+| `monthly_budget_usd` | Monthly spend cap in USD; alerts at 80% and 100% | `20` (dev) / `50` (prod) |
 
 ---
 
@@ -235,6 +241,19 @@ Four service accounts with least-privilege access:
 | **GCS** | Storage volume. Single bucket with folder prefixes keeps costs low. |
 | **BigQuery** | Bytes scanned per query (external tables — no storage cost for silver data). |
 | **Artifact Registry** | Storage for container images. Only the latest image is retained per repo. |
+
+---
+
+## Alerting
+
+Two alerts are provisioned per environment by the `alerting` module:
+
+| Alert | Trigger | Channel |
+|-------|---------|---------|
+| **Pipeline failure** | `bzp-daily` Cloud Workflow execution logs `severity=ERROR` | Email (rate-limited to 1/hour) |
+| **Budget** | Project spend reaches 80% or 100% of `monthly_budget_usd` | Email |
+
+Both alerts send to the `alert_email` variable. The workflow failure alert includes a direct link to the Cloud Workflows executions console in the notification body.
 
 ---
 
