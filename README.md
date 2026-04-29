@@ -222,7 +222,7 @@ From the lakehouse repo, push a commit to `main`. The CI/CD pipeline will automa
 | `time_zone` | Scheduler timezone | `Europe/Warsaw` |
 | `alert_email` | Recipient for pipeline failure and budget alerts | (required) |
 | `billing_account` | Billing account ID for budget (dev only; prod infers from project) | (required in dev) |
-| `monthly_budget_usd` | Monthly spend cap in USD; alerts at 80% and 100% | `20` (dev) / `50` (prod) |
+| `monthly_budget_amount` | Monthly spend cap in the billing account's currency; alerts at 80% and 100% | `20` (dev) / `50` (prod) |
 
 ---
 

@@ -18,7 +18,7 @@ variable "alert_email" {
   type        = string
 }
 
-variable "monthly_budget_usd" {
-  description = "Monthly spend cap in USD. Alerts fire at 80% and 100% of this amount."
+variable "monthly_budget_amount" {
+  description = "Monthly spend cap in the billing account's currency. Alerts fire at 80% and 100% of this amount."
   type        = number
 }

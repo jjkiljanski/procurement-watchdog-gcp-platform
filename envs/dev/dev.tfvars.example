@@ -34,4 +34,4 @@ backfill_start_date = "2024-01-01"
 # Alerting
 billing_account    = "XXXXXX-XXXXXX-XXXXXX"   # gcloud billing projects describe PROJECT_ID --format='value(billingAccountName)'
 alert_email        = "your-email@example.com"
-monthly_budget_usd = 20
+monthly_budget_amount = 20

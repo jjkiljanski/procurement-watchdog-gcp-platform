@@ -237,7 +237,7 @@ module "alerting" {
   environment        = var.environment
   billing_account    = var.billing_account
   alert_email        = var.alert_email
-  monthly_budget_usd = var.monthly_budget_usd
+  monthly_budget_amount = var.monthly_budget_amount
 
   depends_on = [
     google_project_service.apis["monitoring.googleapis.com"],
