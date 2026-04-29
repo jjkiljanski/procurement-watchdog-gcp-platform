@@ -37,3 +37,7 @@ time_zone     = "Europe/Warsaw"
 
 github_repo         = "jjkiljanski/procurement-watchdog-lakehouse"
 backfill_start_date = "2023-01-01"
+
+# Alerting
+alert_email        = "your-email@example.com"
+monthly_budget_usd = 50
