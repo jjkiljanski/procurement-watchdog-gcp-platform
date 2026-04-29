@@ -20,7 +20,9 @@ terraform {
 }
 
 provider "google" {
-  region = var.region
+  region                = var.region
+  user_project_override = true
+  billing_project       = var.project_id
   # No default project — google_project resource manages project creation.
   # All module resources set project = var.project_id explicitly.
 }
