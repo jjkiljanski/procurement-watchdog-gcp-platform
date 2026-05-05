@@ -10,7 +10,7 @@
 
 terraform {
   backend "gcs" {
-    bucket = ""  # Set in dev.tfvars or via -backend-config
+    bucket = "" # Set in dev.tfvars or via -backend-config
     prefix = "procurement-watchdog/dev"
   }
 }

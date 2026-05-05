@@ -6,6 +6,7 @@
 #     setup_bq_external_tables.py (not Terraform).
 #   - procurement_obs: pipeline_runs, dq_metrics, quarantine_summary tables
 #     are created automatically by obs.py on first write.
+#   - BigQuery connection used by external Iceberg tables to read GCS objects.
 #
 # Grants the pipeline SA dataEditor on both datasets so Dataproc batches can
 # create and write obs tables, and so future Iceberg table registration works.
@@ -35,6 +36,22 @@ resource "google_bigquery_dataset" "obs" {
     layer       = "obs"
     managed_by  = "terraform"
   }
+}
+
+resource "google_bigquery_connection" "iceberg" {
+  project       = var.project_id
+  location      = var.bq_location
+  connection_id = var.iceberg_connection_id
+  friendly_name = "Procurement Watchdog Iceberg external tables"
+  description   = "Connection used by BigQuery external Iceberg tables over gs://${var.lakehouse_bucket}/iceberg/."
+
+  cloud_resource {}
+}
+
+resource "google_storage_bucket_iam_member" "iceberg_connection_viewer" {
+  bucket = var.lakehouse_bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_bigquery_connection.iceberg.cloud_resource[0].service_account_id}"
 }
 
 # --------------------------------------------------------------------------- #

@@ -14,6 +14,17 @@ variable "bq_location" {
   default     = "EU"
 }
 
+variable "lakehouse_bucket" {
+  description = "Name of the lakehouse GCS bucket that stores Iceberg metadata and data."
+  type        = string
+}
+
+variable "iceberg_connection_id" {
+  description = "BigQuery connection ID used by external Iceberg tables."
+  type        = string
+  default     = "procwatch_iceberg"
+}
+
 variable "silver_dataset_id" {
   description = "BigQuery dataset ID for the silver layer (external Iceberg tables)."
   type        = string

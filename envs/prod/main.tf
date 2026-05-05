@@ -53,7 +53,7 @@ resource "google_project" "prod" {
 
 locals {
   required_apis = [
-    "cloudresourcemanager.googleapis.com",  # must be pre-enabled manually — used by Terraform to enable all other APIs
+    "cloudresourcemanager.googleapis.com", # must be pre-enabled manually — used by Terraform to enable all other APIs
     "storage.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
@@ -62,6 +62,7 @@ locals {
     "run.googleapis.com",
     "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",
+    "bigqueryconnection.googleapis.com",
     "logging.googleapis.com",
     "compute.googleapis.com",
     "workflows.googleapis.com",
@@ -170,11 +171,12 @@ module "bigquery" {
   project_id        = var.project_id
   environment       = var.environment
   bq_location       = var.bq_location
+  lakehouse_bucket  = module.storage.bucket_name
   silver_dataset_id = var.bq_silver_dataset_id
   obs_dataset_id    = var.bq_obs_dataset_id
   pipeline_sa_email = module.iam.pipeline_sa_email
 
-  depends_on = [module.iam]
+  depends_on = [module.iam, module.storage, google_project_service.apis["bigqueryconnection.googleapis.com"]]
 }
 
 # --------------------------------------------------------------------------- #
@@ -208,11 +210,11 @@ module "workflows" {
 module "wif" {
   source = "../../modules/wif"
 
-  project_id         = var.project_id
-  naming_prefix      = var.naming_prefix
-  github_repo        = var.github_repo
-  lakehouse_bucket   = module.storage.bucket_name
-  orchestrator_sa_id = module.iam.orchestrator_sa_id
+  project_id              = var.project_id
+  naming_prefix           = var.naming_prefix
+  github_repo             = var.github_repo
+  lakehouse_bucket        = module.storage.bucket_name
+  orchestrator_sa_id      = module.iam.orchestrator_sa_id
   downloader_sa_id        = module.iam.downloader_sa_id
   scheduler_invoker_sa_id = module.workflows.scheduler_invoker_sa_id
 
@@ -233,10 +235,10 @@ module "wif" {
 module "alerting" {
   source = "../../modules/alerting"
 
-  project_id         = var.project_id
-  environment        = var.environment
-  billing_account    = var.billing_account
-  alert_email        = var.alert_email
+  project_id            = var.project_id
+  environment           = var.environment
+  billing_account       = var.billing_account
+  alert_email           = var.alert_email
   monthly_budget_amount = var.monthly_budget_amount
 
   depends_on = [
@@ -286,6 +288,10 @@ output "bq_datasets" {
     silver = module.bigquery.silver_dataset_id
     obs    = module.bigquery.obs_dataset_id
   }
+}
+
+output "bq_iceberg_connection" {
+  value = module.bigquery.iceberg_connection_id
 }
 
 output "workflow_name" {

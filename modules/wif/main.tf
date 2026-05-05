@@ -32,6 +32,9 @@
 #   Required alongside dataEditor to actually run the BigQuery jobs that the setup
 #   script submits (GCP splits table-level access from job-submission access).
 #
+# roles/bigquery.connectionUser
+#   Required to create external Iceberg tables with the BigQuery connection.
+#
 # roles/storage.objectAdmin (bucket-level)
 #   `gsutil cp scripts/pipeline/*.py gs://{bucket}/jobs/` uploads the pipeline scripts
 #   that Dataproc Serverless reads at batch submission time.
@@ -138,6 +141,12 @@ resource "google_project_iam_member" "ci_bq_data_editor" {
 resource "google_project_iam_member" "ci_bq_job_user" {
   project = var.project_id
   role    = "roles/bigquery.jobUser"
+  member  = "serviceAccount:${google_service_account.ci.email}"
+}
+
+resource "google_project_iam_member" "ci_bq_connection_user" {
+  project = var.project_id
+  role    = "roles/bigquery.connectionUser"
   member  = "serviceAccount:${google_service_account.ci.email}"
 }
 
