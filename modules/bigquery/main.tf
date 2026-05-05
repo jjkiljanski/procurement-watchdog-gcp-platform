@@ -48,10 +48,18 @@ resource "google_bigquery_connection" "iceberg" {
   cloud_resource {}
 }
 
+resource "time_sleep" "iceberg_connection_service_account_propagation" {
+  create_duration = "60s"
+
+  depends_on = [google_bigquery_connection.iceberg]
+}
+
 resource "google_storage_bucket_iam_member" "iceberg_connection_viewer" {
   bucket = var.lakehouse_bucket
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_bigquery_connection.iceberg.cloud_resource[0].service_account_id}"
+
+  depends_on = [time_sleep.iceberg_connection_service_account_propagation]
 }
 
 # --------------------------------------------------------------------------- #
