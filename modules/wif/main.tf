@@ -32,8 +32,9 @@
 #   Required alongside dataEditor to actually run the BigQuery jobs that the setup
 #   script submits (GCP splits table-level access from job-submission access).
 #
-# roles/bigquery.connectionUser
-#   Required to create external Iceberg tables with the BigQuery connection.
+# roles/bigquery.connectionAdmin
+#   Required because `CREATE EXTERNAL TABLE ... WITH CONNECTION` needs
+#   bigquery.connections.delegate on the referenced connection.
 #
 # roles/storage.objectAdmin (bucket-level)
 #   `gsutil cp scripts/pipeline/*.py gs://{bucket}/jobs/` uploads the pipeline scripts
@@ -144,9 +145,9 @@ resource "google_project_iam_member" "ci_bq_job_user" {
   member  = "serviceAccount:${google_service_account.ci.email}"
 }
 
-resource "google_project_iam_member" "ci_bq_connection_user" {
+resource "google_project_iam_member" "ci_bq_connection_admin" {
   project = var.project_id
-  role    = "roles/bigquery.connectionUser"
+  role    = "roles/bigquery.connectionAdmin"
   member  = "serviceAccount:${google_service_account.ci.email}"
 }
 
