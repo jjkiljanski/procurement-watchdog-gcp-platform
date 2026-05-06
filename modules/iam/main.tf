@@ -102,6 +102,12 @@ resource "google_project_iam_member" "orchestrator_run_developer" {
   member  = "serviceAccount:${google_service_account.orchestrator.email}"
 }
 
+resource "google_project_iam_member" "orchestrator_run_invoker" {
+  project = var.project_id
+  role    = "roles/run.invoker"
+  member  = "serviceAccount:${google_service_account.orchestrator.email}"
+}
+
 resource "google_project_iam_member" "orchestrator_dataproc_editor" {
   project = var.project_id
   role    = "roles/dataproc.editor"
